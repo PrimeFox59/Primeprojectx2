@@ -6,6 +6,7 @@ from datetime import datetime, date
 import altair as alt
 import pytz
 import json
+import urllib.parse
 
 # Timezone GMT+7 (WIB)
 WIB = pytz.timezone('Asia/Jakarta')
@@ -346,6 +347,84 @@ def get_checklist_selesai():
     """Ambil checklist selesai dari database"""
     checklist = get_setting("checklist_selesai")
     return checklist if checklist else DEFAULT_CHECKLIST_SELESAI
+
+def generate_invoice_message(trans_data, toko_info):
+    """Generate pesan invoice untuk WhatsApp"""
+    # Parse checklist
+    try:
+        checklist_datang = json.loads(trans_data['checklist_datang'])
+        checklist_str_datang = '\n'.join([f"✓ {item}" for item in checklist_datang])
+    except:
+        checklist_str_datang = "N/A"
+    
+    try:
+        checklist_selesai = json.loads(trans_data['checklist_selesai'])
+        checklist_str_selesai = '\n'.join([f"✓ {item}" for item in checklist_selesai])
+    except:
+        checklist_str_selesai = "N/A"
+    
+    # Format pesan
+    message = f"""🚗 *INVOICE CUCI MOBIL*
+━━━━━━━━━━━━━━━━━━━━
+
+*{toko_info.get('nama', 'CUCI MOBIL')}*
+📍 {toko_info.get('alamat', '')}
+📞 {toko_info.get('telp', '')}
+
+━━━━━━━━━━━━━━━━━━━━
+*DETAIL TRANSAKSI*
+
+🔖 Nopol: *{trans_data['nopol']}*
+👤 Customer: {trans_data['nama_customer']}
+📅 Tanggal: {trans_data['tanggal']}
+⏰ Masuk: {trans_data['waktu_masuk']}
+⏰ Selesai: {trans_data['waktu_selesai']}
+
+📦 Paket: *{trans_data['paket_cuci']}*
+💰 Harga: *Rp {trans_data['harga']:,.0f}*
+
+━━━━━━━━━━━━━━━━━━━━
+*CHECKLIST SAAT DATANG:*
+{checklist_str_datang}
+
+*CHECKLIST SELESAI:*
+{checklist_str_selesai}
+
+━━━━━━━━━━━━━━━━━━━━
+"""
+    
+    if trans_data.get('qc_barang'):
+        message += f"📋 *Barang Customer:*\n{trans_data['qc_barang']}\n\n"
+    
+    if trans_data.get('catatan'):
+        message += f"💬 *Catatan:*\n{trans_data['catatan']}\n\n"
+    
+    message += """━━━━━━━━━━━━━━━━━━━━
+✨ Terima kasih telah menggunakan layanan kami!
+Ditunggu kunjungan berikutnya 🙏"""
+    
+    return message
+
+def create_whatsapp_link(phone_number, message):
+    """Create WhatsApp link dengan nomor dan pesan"""
+    # Clean phone number - remove spaces, dashes, etc
+    phone = phone_number.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+    
+    # Convert 08xxx to 628xxx for WhatsApp
+    if phone.startswith('08'):
+        phone = '62' + phone[1:]
+    elif phone.startswith('8'):
+        phone = '62' + phone
+    elif phone.startswith('+62'):
+        phone = phone[1:]
+    
+    # URL encode the message
+    encoded_message = urllib.parse.quote(message)
+    
+    # Create WhatsApp link
+    wa_link = f"https://wa.me/{phone}?text={encoded_message}"
+    
+    return wa_link
 
 
 
@@ -1072,6 +1151,57 @@ def transaksi_page(role):
                     if selected_hist['catatan']:
                         st.markdown("**💬 Catatan:**")
                         st.info(selected_hist['catatan'])
+                    
+                    # Tombol kirim invoice via WhatsApp
+                    st.markdown("---")
+                    st.markdown("**📱 Kirim Invoice via WhatsApp**")
+                    
+                    # Ambil nomor telepon customer
+                    cust_data = get_customer_by_nopol(selected_hist['nopol'])
+                    phone_number = cust_data['no_telp'] if cust_data and cust_data.get('no_telp') else None
+                    
+                    if phone_number and phone_number.strip():
+                        col_wa1, col_wa2 = st.columns([3, 2])
+                        with col_wa1:
+                            st.info(f"📞 Nomor Tujuan: **{phone_number}**")
+                        with col_wa2:
+                            # Generate invoice message
+                            toko_info = get_setting("toko_info") or {
+                                "nama": "CUCI MOBIL BERSIH",
+                                "alamat": "Jl. Contoh No. 123",
+                                "telp": "08123456789",
+                                "email": "info@cucimobil.com"
+                            }
+                            
+                            invoice_message = generate_invoice_message(selected_hist.to_dict(), toko_info)
+                            wa_link = create_whatsapp_link(phone_number, invoice_message)
+                            
+                            # Tombol WhatsApp dengan link
+                            st.markdown(f"""
+                                <a href="{wa_link}" target="_blank">
+                                    <button style="
+                                        background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+                                        color: white;
+                                        border: none;
+                                        padding: 12px 24px;
+                                        border-radius: 10px;
+                                        font-size: 16px;
+                                        font-weight: 600;
+                                        cursor: pointer;
+                                        box-shadow: 0 4px 15px rgba(37, 211, 102, 0.3);
+                                        width: 100%;
+                                        transition: all 0.3s ease;
+                                    " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(37, 211, 102, 0.4)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(37, 211, 102, 0.3)';">
+                                        💬 Kirim Invoice
+                                    </button>
+                                </a>
+                            """, unsafe_allow_html=True)
+                        
+                        # Preview pesan
+                        with st.expander("👁️ Preview Pesan Invoice"):
+                            st.text(invoice_message)
+                    else:
+                        st.warning("⚠️ Nomor telepon customer belum terdaftar. Silakan update data customer terlebih dahulu.")
                 
                 # Tabel ringkas
                 st.markdown("### 📊 Daftar Transaksi Selesai")
