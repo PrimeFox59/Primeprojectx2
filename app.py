@@ -687,8 +687,7 @@ def transaksi_page(role):
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            st.markdown('<div class="form-section">', unsafe_allow_html=True)
-            st.markdown('<p class="section-title">🚘 Data Kendaraan</p>', unsafe_allow_html=True)
+            st.subheader("🚘 Data Kendaraan")
             
             nopol_input = st.text_input("🔖 Nomor Polisi *", placeholder="Contoh: B1234XYZ", 
                                        key="trans_nopol", help="Masukkan nomor polisi kendaraan").upper()
@@ -723,29 +722,22 @@ def transaksi_page(role):
                 with col_addr:
                     alamat_cust = st.text_input("📍 Alamat", key="trans_alamat", 
                                                placeholder="Alamat customer")
-            st.markdown('</div>', unsafe_allow_html=True)
         
         with col2:
-            st.markdown('<div class="form-section">', unsafe_allow_html=True)
-            st.markdown('<p class="section-title">🕐 Waktu</p>', unsafe_allow_html=True)
+            st.subheader("🕐 Waktu")
             now_wib = datetime.now(WIB)
             tanggal_trans = st.date_input("📅 Tanggal", value=now_wib.date(), key="trans_date")
             waktu_masuk = st.time_input("⏰ Waktu Masuk", value=now_wib.time(), key="trans_time")
-            st.markdown('</div>', unsafe_allow_html=True)
         
         # Paket cuci
-        st.markdown('<div class="form-section">', unsafe_allow_html=True)
-        st.markdown('<p class="section-title">📦 Paket Cuci & Harga</p>', unsafe_allow_html=True)
+        st.subheader("📦 Paket Cuci & Harga")
         
         paket = st.selectbox("🧼 Pilih Paket Cuci *", options=list(paket_cucian.keys()), key="trans_paket")
         harga = paket_cucian[paket]
         st.success(f"💰 Harga: **Rp {harga:,.0f}**")
         
-        st.markdown('</div>', unsafe_allow_html=True)
-        
         # Checklist saat datang
-        st.markdown('<div class="form-section">', unsafe_allow_html=True)
-        st.markdown('<p class="section-title">✅ Checklist Kondisi Mobil Saat Datang</p>', unsafe_allow_html=True)
+        st.subheader("✅ Checklist Kondisi Mobil Saat Datang")
         
         selected_checks = []
         cols = st.columns(3)
@@ -753,11 +745,9 @@ def transaksi_page(role):
             with cols[idx % 3]:
                 if st.checkbox(item, key=f"check_{idx}", value=True):
                     selected_checks.append(item)
-        st.markdown('</div>', unsafe_allow_html=True)
         
         # QC Barang dalam mobil
-        st.markdown('<div class="form-section">', unsafe_allow_html=True)
-        st.markdown('<p class="section-title">📋 QC Barang dalam Mobil</p>', unsafe_allow_html=True)
+        st.subheader("📋 QC Barang dalam Mobil")
         qc_barang = st.text_area("📝 Catat barang-barang di dalam mobil", 
                                  placeholder="Contoh:\n• Dompet di dashboard\n• HP di tempat HP\n• Karpet di bagasi\n• Payung di pintu",
                                  key="trans_qc_barang", height=120)
@@ -765,7 +755,6 @@ def transaksi_page(role):
         # Catatan tambahan
         catatan = st.text_area("� Catatan Tambahan", placeholder="Catatan khusus untuk pengerjaan...", 
                               key="trans_catatan", height=80)
-        st.markdown('</div>', unsafe_allow_html=True)
         
         # Submit button
         col1, col2, col3 = st.columns([2, 1, 2])
@@ -810,9 +799,7 @@ def transaksi_page(role):
                     st.error(f"❌ {msg}")
     
     with tab2:
-        st.markdown('<div class="form-section">', unsafe_allow_html=True)
-        st.markdown('<p class="section-title">✅ Selesaikan Transaksi</p>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.subheader("✅ Selesaikan Transaksi")
         
         checklist_selesai_items = get_checklist_selesai()
         
@@ -883,7 +870,6 @@ def transaksi_page(role):
                 st.stop()
             
             # Tampilkan detail
-            st.markdown('<div class="form-section">', unsafe_allow_html=True)
             with st.expander("📄 Detail Transaksi", expanded=True):
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -917,18 +903,14 @@ def transaksi_page(role):
                 if selected_trans['catatan']:
                     st.markdown("**💬 Catatan:**")
                     st.warning(selected_trans['catatan'])
-            st.markdown('</div>', unsafe_allow_html=True)
             
             # Input waktu selesai
-            st.markdown('<div class="form-section">', unsafe_allow_html=True)
-            st.markdown('<p class="section-title">⏰ Waktu Penyelesaian</p>', unsafe_allow_html=True)
+            st.subheader("⏰ Waktu Penyelesaian")
             now_wib = datetime.now(WIB)
             waktu_selesai = st.time_input("🕐 Waktu Selesai", value=now_wib.time(), key="finish_time")
-            st.markdown('</div>', unsafe_allow_html=True)
             
             # Checklist selesai
-            st.markdown('<div class="form-section">', unsafe_allow_html=True)
-            st.markdown('<p class="section-title">✅ Checklist QC Selesai Cuci</p>', unsafe_allow_html=True)
+            st.subheader("✅ Checklist QC Selesai Cuci")
             
             selected_checks_selesai = []
             cols = st.columns(3)
@@ -936,11 +918,9 @@ def transaksi_page(role):
                 with cols[idx % 3]:
                     if st.checkbox(item, key=f"check_done_{idx}", value=True):
                         selected_checks_selesai.append(item)
-            st.markdown('</div>', unsafe_allow_html=True)
             
             # QC final barang
-            st.markdown('<div class="form-section">', unsafe_allow_html=True)
-            st.markdown('<p class="section-title">📋 Konfirmasi Final</p>', unsafe_allow_html=True)
+            st.subheader("📋 Konfirmasi Final")
             qc_final = st.text_area("✓ Konfirmasi Barang Customer Kembali Lengkap", 
                                    value=selected_trans['qc_barang'],
                                    placeholder="Pastikan semua barang customer kembali lengkap",
@@ -949,7 +929,6 @@ def transaksi_page(role):
             catatan_final = st.text_area("� Catatan Penyelesaian", 
                                         placeholder="Hasil pengerjaan, kondisi akhir, dll...", 
                                         key="finish_catatan", height=80)
-            st.markdown('</div>', unsafe_allow_html=True)
             
             # Finish button
             col1, col2, col3 = st.columns([2, 1, 2])
@@ -1011,9 +990,7 @@ def transaksi_page(role):
                         st.error(f"❌ {msg}")
     
     with tab3:
-        st.markdown('<div class="form-section">', unsafe_allow_html=True)
-        st.markdown('<p class="section-title">📚 History Customer - Transaksi Selesai</p>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.subheader("📚 History Customer - Transaksi Selesai")
         
         # Load transaksi yang sudah selesai
         df_trans = get_all_transactions()
@@ -1154,7 +1131,6 @@ def customer_page(role):
             st.info("📭 Belum ada customer terdaftar. Silakan tambah customer baru di tab sebelah →")
         else:
             # Search dengan UI lebih baik
-            st.markdown('<div class="search-box">', unsafe_allow_html=True)
             col1, col2 = st.columns([3, 1])
             with col1:
                 search = st.text_input("🔍 Cari customer", key="cust_search", 
@@ -1162,7 +1138,6 @@ def customer_page(role):
                                       label_visibility="collapsed")
             with col2:
                 st.metric("📊 Total Customer", len(df_cust))
-            st.markdown('</div>', unsafe_allow_html=True)
             
             if search:
                 mask = df_cust['nopol'].str.contains(search, case=False, na=False) | \
@@ -1236,8 +1211,6 @@ def customer_page(role):
                         st.rerun()
                     else:
                         st.error(f"❌ {msg}")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
 
 def laporan_page(role):
     st.markdown("""
@@ -1354,8 +1327,7 @@ def laporan_page(role):
     st.markdown("---")
     
     # Tabel per paket
-    st.markdown('<div class="report-box">', unsafe_allow_html=True)
-    st.markdown('<p class="report-title">📦 Pendapatan per Paket Cuci</p>', unsafe_allow_html=True)
+    st.subheader("📦 Pendapatan per Paket Cuci")
     
     paket_summary = df_filtered.groupby('paket_cuci').agg(
         Jumlah=('id', 'count'),
@@ -1370,14 +1342,12 @@ def laporan_page(role):
     paket_summary['Rata-rata'] = paket_summary['Rata-rata'].apply(lambda x: f"Rp {x:,.0f}")
     
     st.dataframe(paket_summary, use_container_width=True, hide_index=True)
-    st.markdown('</div>', unsafe_allow_html=True)
     
     # Grafik
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        st.markdown('<p class="report-title">📊 Jumlah Transaksi per Paket</p>', unsafe_allow_html=True)
+        st.subheader("📊 Jumlah Transaksi per Paket")
         paket_count = df_filtered.groupby('paket_cuci').size().reset_index(name='count')
         paket_count = paket_count.sort_values('count', ascending=False)
         chart = alt.Chart(paket_count).mark_bar(cornerRadiusEnd=8).encode(
@@ -1390,11 +1360,9 @@ def laporan_page(role):
             ]
         ).properties(height=280)
         st.altair_chart(chart, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
-        st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        st.markdown('<p class="report-title">💰 Pendapatan per Paket</p>', unsafe_allow_html=True)
+        st.subheader("💰 Pendapatan per Paket")
         paket_income = df_filtered.groupby('paket_cuci')['harga'].sum().reset_index()
         paket_income.columns = ['paket', 'total']
         pie = alt.Chart(paket_income).mark_arc(innerRadius=60).encode(
@@ -1406,12 +1374,10 @@ def laporan_page(role):
             ]
         ).properties(height=280)
         st.altair_chart(pie, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
     
     # Tren harian
     if selected_month != 0:
-        st.markdown('<div class="report-box">', unsafe_allow_html=True)
-        st.markdown('<p class="report-title">📈 Tren Pendapatan Harian</p>', unsafe_allow_html=True)
+        st.subheader("📈 Tren Pendapatan Harian")
         daily_income = df_filtered.groupby('tanggal').agg(
             total=('harga', 'sum'),
             count=('id', 'count')
@@ -1431,7 +1397,6 @@ def laporan_page(role):
         ).properties(height=250)
         
         st.altair_chart(line, use_container_width=True)
-        st.markdown('</div>', unsafe_allow_html=True)
 
 def setting_toko_page(role):
     st.markdown("""
@@ -1469,7 +1434,6 @@ def setting_toko_page(role):
     tab1, tab2, tab3, tab4 = st.tabs(["📦 Paket Cuci", "✅ Checklist Datang", "✓ Checklist Selesai", "🏪 Info Toko"])
     
     with tab1:
-        st.markdown('<div class="setting-section">', unsafe_allow_html=True)
         st.subheader("📦 Kelola Paket Cucian")
         
         # Load paket cucian
@@ -1524,11 +1488,8 @@ def setting_toko_page(role):
                 st.rerun()
             else:
                 st.error(f"❌ {msg}")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
     
     with tab2:
-        st.markdown('<div class="setting-section">', unsafe_allow_html=True)
         st.subheader("✅ Kelola Checklist Mobil Datang")
         
         checklist_datang = get_checklist_datang()
@@ -1574,11 +1535,8 @@ def setting_toko_page(role):
                 st.rerun()
             else:
                 st.error(f"❌ {msg}")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
     
     with tab3:
-        st.markdown('<div class="setting-section">', unsafe_allow_html=True)
         st.subheader("✓ Kelola Checklist QC Selesai")
         
         checklist_selesai = get_checklist_selesai()
@@ -1624,11 +1582,8 @@ def setting_toko_page(role):
                 st.rerun()
             else:
                 st.error(f"❌ {msg}")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
     
     with tab4:
-        st.markdown('<div class="setting-section">', unsafe_allow_html=True)
         st.subheader("🏪 Informasi Toko")
         
         toko_info = get_setting("toko_info")
@@ -1667,8 +1622,6 @@ def setting_toko_page(role):
                     st.rerun()
                 else:
                     st.error(f"❌ {msg}")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
 
 def audit_trail_page():
     st.header("Audit Trail")
