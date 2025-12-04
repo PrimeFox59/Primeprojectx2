@@ -52,6 +52,19 @@ PAKET_CUCIAN = {
     "Exterior Only": 40000
 }
 
+# --- Coffee Shop Default Menu ---
+DEFAULT_COFFEE_MENU = {
+    "Espresso": 15000,
+    "Americano": 18000,
+    "Latte": 22000,
+    "Cappuccino": 22000,
+    "Mocha": 25000,
+    "Iced Coffee": 20000,
+    "Biskuit": 8000,
+    "Roti Manis": 12000,
+    "Sandwich": 20000
+}
+
 # Default checklist items (akan diload dari database)
 DEFAULT_CHECKLIST_DATANG = [
     "Ban lengkap dan baik",
@@ -154,6 +167,21 @@ def init_db():
         }
         c.execute("INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
                  ("toko_info", json.dumps(toko_info), now))
+        # Default coffee shop menu
+        c.execute("INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+                 ("coffee_menu", json.dumps(DEFAULT_COFFEE_MENU), now))
+
+    # Tabel untuk menyimpan transaksi penjualan kopi/snack
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS coffee_sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            items TEXT NOT NULL,
+            total INTEGER NOT NULL,
+            tanggal TEXT NOT NULL,
+            waktu TEXT NOT NULL,
+            created_by TEXT
+        )
+    ''')
     
     conn.commit()
     conn.close()
@@ -347,6 +375,43 @@ def get_checklist_selesai():
     """Ambil checklist selesai dari database"""
     checklist = get_setting("checklist_selesai")
     return checklist if checklist else DEFAULT_CHECKLIST_SELESAI
+
+
+# --- Coffee Shop Helpers ---
+def get_coffee_menu():
+    """Ambil daftar menu coffee/snack dari settings"""
+    menu = get_setting("coffee_menu")
+    return menu if menu else DEFAULT_COFFEE_MENU
+
+
+def save_coffee_sale(data):
+    """Simpan transaksi penjualan coffee/snack ke DB"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT INTO coffee_sales (items, total, tanggal, waktu, created_by)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            json.dumps(data.get('items', []), ensure_ascii=False),
+            int(data.get('total', 0)),
+            data.get('tanggal', ''),
+            data.get('waktu', ''),
+            data.get('created_by', '')
+        ))
+        conn.commit()
+        return True, "Penjualan Coffee berhasil disimpan"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+
+def get_all_coffee_sales():
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql("SELECT * FROM coffee_sales ORDER BY tanggal DESC, waktu DESC", conn)
+    conn.close()
+    return df
 
 def generate_invoice_message(trans_data, toko_info):
     """Generate pesan invoice untuk WhatsApp"""
@@ -1213,6 +1278,97 @@ def transaksi_page(role):
             else:
                 st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
 
+
+def coffee_shop_page(role):
+    st.markdown("""
+    <style>
+    .coffee-header { background: linear-gradient(135deg, #f6d365 0%, #fda085 100%); padding: 1.2rem; border-radius: 12px; color: #2d3436; margin-bottom: 1rem; }
+    .coffee-card { background: white; padding: 1rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="coffee-header"><h2>☕️ Coffee Shop</h2><p>Penjualan kopi dan snack</p></div>', unsafe_allow_html=True)
+
+    menu = get_coffee_menu()
+    if not menu:
+        st.info("Belum ada menu coffee. Silakan hubungi Admin untuk menambahkan menu.")
+        return
+
+    st.subheader("Menu & Order")
+    cols = st.columns([3,1,1])
+
+    # Build order form
+    order = {}
+    for idx, (name, price) in enumerate(menu.items()):
+        c1, c2 = st.columns([3,1])
+        with c1:
+            st.write(f"**{name}** - Rp {price:,.0f}")
+        with c2:
+            qty = st.number_input(f"Qty {name}", min_value=0, value=0, key=f"coffee_qty_{idx}")
+        if qty and qty > 0:
+            order[name] = { 'price': price, 'qty': int(qty), 'subtotal': price * int(qty) }
+
+    if order:
+        st.markdown("---")
+        st.subheader("Ringkasan Order")
+        df_order = pd.DataFrame([{
+            'Item': k,
+            'Harga': v['price'],
+            'Qty': v['qty'],
+            'Subtotal': v['subtotal']
+        } for k, v in order.items()])
+        df_order['Harga'] = df_order['Harga'].apply(lambda x: f"Rp {x:,.0f}")
+        df_order['Subtotal'] = df_order['Subtotal'].apply(lambda x: f"Rp {x:,.0f}")
+        st.table(df_order)
+
+        total = sum(v['subtotal'] for v in order.values())
+        st.success(f"Total: Rp {total:,.0f}")
+
+        col1, col2 = st.columns([2,1])
+        with col2:
+            save_btn = st.button("💾 Simpan Penjualan Coffee", key="save_coffee_sale")
+
+        if save_btn:
+            now_wib = datetime.now(WIB)
+            trans = {
+                'items': [{'name': k, 'price': v['price'], 'qty': v['qty']} for k, v in order.items()],
+                'total': total,
+                'tanggal': now_wib.strftime('%d-%m-%Y'),
+                'waktu': now_wib.strftime('%H:%M:%S'),
+                'created_by': st.session_state.get('login_user', '')
+            }
+            success, msg = save_coffee_sale(trans)
+            if success:
+                st.success(msg)
+                add_audit('coffee_sale', f"Penjualan coffee total Rp {total:,.0f}")
+                # Reset qty fields by rerun
+                st.experimental_rerun()
+            else:
+                st.error(msg)
+    else:
+        st.info("Belum ada item dipilih untuk dipesan")
+
+    # History
+    st.markdown('---')
+    st.subheader('📜 Riwayat Penjualan Coffee')
+    df_sales = get_all_coffee_sales()
+    if df_sales.empty:
+        st.info('Belum ada penjualan coffee tersimpan')
+    else:
+        # parse items for display
+        def items_str(js):
+            try:
+                arr = json.loads(js)
+                return '\n'.join([f"{i['qty']}x {i['name']} (Rp {i['price']:,.0f})" for i in arr])
+            except:
+                return js
+
+        df_sales['Items Detail'] = df_sales['items'].apply(items_str)
+        df_disp = df_sales[['tanggal', 'waktu', 'Items Detail', 'total', 'created_by']].copy()
+        df_disp.columns = ['Tanggal', 'Waktu', 'Items', 'Total', 'Kasir']
+        df_disp['Total'] = df_disp['Total'].apply(lambda x: f"Rp {x:,.0f}")
+        st.dataframe(df_disp, use_container_width=True)
+
 def customer_page(role):
     st.markdown("""
     <style>
@@ -1970,7 +2126,8 @@ def main():
     # Menu items
     menu_items = [
         ("Dashboard", "📊"),
-        ("Transaksi", "🚗"),
+        ("Cuci Mobil", "🚗"),
+        ("Coffee Shop", "☕️"),
         ("Customer", "👥"),
         ("Laporan", "📊"),
         ("Setting Toko", "⚙️"),
@@ -2001,8 +2158,10 @@ def main():
     # Route to pages
     if menu == "Dashboard":
         dashboard_page(role)
-    elif menu == "Transaksi":
+    elif menu == "Cuci Mobil":
         transaksi_page(role)
+    elif menu == "Coffee Shop":
+        coffee_shop_page(role)
     elif menu == "Customer":
         customer_page(role)
     elif menu == "Laporan":
