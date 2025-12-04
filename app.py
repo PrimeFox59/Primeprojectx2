@@ -160,10 +160,11 @@ def init_db():
         
         # Info toko
         toko_info = {
-            "nama": "CUCI MOBIL BERSIH",
+            "nama": "TIME AUTOCARE",
+            "tagline": "Detailing & Ceramic Coating",
             "alamat": "Jl. Contoh No. 123",
             "telp": "08123456789",
-            "email": "info@cucimobil.com"
+            "email": "info@timeautocare.com"
         }
         c.execute("INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
                  ("toko_info", json.dumps(toko_info), now))
@@ -179,9 +180,19 @@ def init_db():
             total INTEGER NOT NULL,
             tanggal TEXT NOT NULL,
             waktu TEXT NOT NULL,
+            nama_customer TEXT,
+            no_telp TEXT,
             created_by TEXT
         )
     ''')
+    
+    # Migration: Add nama_customer and no_telp columns if they don't exist
+    try:
+        c.execute("SELECT nama_customer FROM coffee_sales LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column doesn't exist, add it
+        c.execute("ALTER TABLE coffee_sales ADD COLUMN nama_customer TEXT")
+        c.execute("ALTER TABLE coffee_sales ADD COLUMN no_telp TEXT")
     
     conn.commit()
     conn.close()
@@ -376,6 +387,20 @@ def get_checklist_selesai():
     checklist = get_setting("checklist_selesai")
     return checklist if checklist else DEFAULT_CHECKLIST_SELESAI
 
+def get_toko_info():
+    """Ambil informasi toko dari database"""
+    toko = get_setting("toko_info")
+    if toko:
+        return toko
+    # Default fallback
+    return {
+        "nama": "TIME AUTOCARE",
+        "tagline": "Detailing & Ceramic Coating",
+        "alamat": "Jl. Contoh No. 123",
+        "telp": "08123456789",
+        "email": "info@timeautocare.com"
+    }
+
 
 # --- Coffee Shop Helpers ---
 def get_coffee_menu():
@@ -390,13 +415,15 @@ def save_coffee_sale(data):
     c = conn.cursor()
     try:
         c.execute("""
-            INSERT INTO coffee_sales (items, total, tanggal, waktu, created_by)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO coffee_sales (items, total, tanggal, waktu, nama_customer, no_telp, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             json.dumps(data.get('items', []), ensure_ascii=False),
             int(data.get('total', 0)),
             data.get('tanggal', ''),
             data.get('waktu', ''),
+            data.get('nama_customer', ''),
+            data.get('no_telp', ''),
             data.get('created_by', '')
         ))
         conn.commit()
@@ -412,6 +439,57 @@ def get_all_coffee_sales():
     df = pd.read_sql("SELECT * FROM coffee_sales ORDER BY tanggal DESC, waktu DESC", conn)
     conn.close()
     return df
+
+def generate_coffee_invoice(sale_data, toko_info):
+    """Generate invoice coffee shop untuk WhatsApp"""
+    # Parse items
+    try:
+        items_list = json.loads(sale_data['items']) if isinstance(sale_data['items'], str) else sale_data['items']
+        items_str = '\n'.join([f"  {i['qty']}x {i['name']} @ Rp {i['price']:,.0f}" for i in items_list])
+    except:
+        items_str = "N/A"
+    
+    # Format pesan yang menarik dan impressive
+    message = f"""*{'='*35}*
+   *INVOICE COFFEE SHOP*
+*{'='*35}*
+
+*{toko_info.get('nama', 'TIME AUTOCARE')}*
+_{toko_info.get('tagline', 'Detailing & Ceramic Coating')}_
+Alamat: {toko_info.get('alamat', '')}
+Telp: {toko_info.get('telp', '')}
+
+*{'='*35}*
+   *DETAIL PESANAN*
+*{'='*35}*
+
+Customer: *{sale_data.get('nama_customer', 'Walk-in Customer')}*
+Tanggal: {sale_data['tanggal']}
+Waktu: {sale_data['waktu']}
+Kasir: {sale_data.get('created_by', '-')}
+
+*{'='*35}*
+   *PESANAN ANDA*
+*{'='*35}*
+
+{items_str}
+
+*{'='*35}*
+
+*TOTAL PEMBAYARAN:*
+*Rp {sale_data['total']:,.0f}*
+
+*{'='*35}*
+
+_Terima kasih atas kunjungan Anda!_
+_Kepuasan Anda adalah prioritas kami_
+
+*Sampai jumpa lagi!* 
+
+_Nikmati setiap tegukan..._
+"""
+    
+    return message
 
 def generate_invoice_message(trans_data, toko_info):
     """Generate pesan invoice untuk WhatsApp"""
@@ -429,10 +507,11 @@ def generate_invoice_message(trans_data, toko_info):
         checklist_str_selesai = "N/A"
     
     # Format pesan
-    message = f"""🚗 *INVOICE CUCI MOBIL*
+    message = f"""🚗 *INVOICE TIME AUTOCARE*
 ━━━━━━━━━━━━━━━━━━━━
 
-*{toko_info.get('nama', 'CUCI MOBIL')}*
+*{toko_info.get('nama', 'TIME AUTOCARE')}*
+_{toko_info.get('tagline', 'Detailing & Ceramic Coating')}_
 📍 {toko_info.get('alamat', '')}
 📞 {toko_info.get('telp', '')}
 
@@ -531,7 +610,7 @@ def load_audit_trail(user=None):
     return df
 
 def login_page():
-    st.set_page_config(page_title="Login Cuci Mobil", layout="centered")
+    st.set_page_config(page_title="Login TIME AUTOCARE", layout="centered")
     
     st.markdown("""
     <style>
@@ -546,7 +625,7 @@ def login_page():
     </style>
     """, unsafe_allow_html=True)
     
-    st.title("🚗 Sistem Manajemen Cuci Mobil")
+    st.title("TIME AUTOCARE 🚗")
     st.markdown("---")
     
     username = st.text_input("👤 Username", key="login_username")
@@ -659,6 +738,41 @@ def dashboard_page(role):
         margin-bottom: 2rem;
         box-shadow: 0 2px 8px rgba(0,0,0,0.05);
     }
+    .business-summary {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 20px;
+        color: white;
+        margin: 2rem 0;
+        box-shadow: 0 8px 30px rgba(102, 126, 234, 0.3);
+    }
+    .business-summary h3 {
+        margin: 0 0 1rem 0;
+        font-size: 1.5rem;
+        font-weight: 800;
+    }
+    .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1.5rem;
+        margin-top: 1.5rem;
+    }
+    .summary-item {
+        background: rgba(255,255,255,0.15);
+        padding: 1.2rem;
+        border-radius: 12px;
+        backdrop-filter: blur(10px);
+    }
+    .summary-item-label {
+        font-size: 0.85rem;
+        opacity: 0.9;
+        margin-bottom: 0.5rem;
+        font-weight: 600;
+    }
+    .summary-item-value {
+        font-size: 1.8rem;
+        font-weight: 900;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -666,34 +780,59 @@ def dashboard_page(role):
     now = datetime.now(WIB)
     st.markdown(f'''
     <div class="dashboard-header">
-        <h1>📊 Dashboard Cuci Mobil</h1>
-        <p>📅 {now.strftime("%A, %d %B %Y")} • ⏰ {now.strftime("%H:%M:%S")} WIB</p>
+        <h1>📊 Dashboard TIME AUTOCARE</h1>
+        <p>📅 {now.strftime("%A, %d %B %Y")} • ⏰ {now.strftime("%H:%M:%S")} WIB • 👤 {role}</p>
     </div>
     ''', unsafe_allow_html=True)
     
     # Load data transaksi
     df_trans = get_all_transactions()
     df_cust = get_all_customers()
+    df_coffee = get_all_coffee_sales()
     
     # Filter tanggal - default hari ini
-    col1, col2 = st.columns([2, 2])
+    today = datetime.now(WIB).date()
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        today = datetime.now(WIB).date()
-        date_filter = st.date_input("� Filter Tanggal", value=(today, today))
+        date_filter = st.date_input("📅 Filter Periode", value=(today, today))
+    with col2:
+        if st.button("📊 Hari Ini", use_container_width=True):
+            date_filter = (today, today)
+            st.rerun()
+    with col3:
+        if st.button("📅 Bulan Ini", use_container_width=True):
+            first_day = today.replace(day=1)
+            date_filter = (first_day, today)
+            st.rerun()
     
     # Apply filter
     if isinstance(date_filter, (list, tuple)) and len(date_filter) == 2:
         start_date = date_filter[0].strftime('%d-%m-%Y')
         end_date = date_filter[1].strftime('%d-%m-%Y')
         df_filtered = get_transactions_by_date_range(start_date, end_date)
+        
+        # Filter coffee sales by date range
+        df_coffee_filtered = df_coffee[
+            (pd.to_datetime(df_coffee['tanggal'], format='%d-%m-%Y', errors='coerce') >= pd.to_datetime(start_date, format='%d-%m-%Y')) &
+            (pd.to_datetime(df_coffee['tanggal'], format='%d-%m-%Y', errors='coerce') <= pd.to_datetime(end_date, format='%d-%m-%Y'))
+        ]
     else:
         df_filtered = df_trans
+        df_coffee_filtered = df_coffee
     
-    # Hitung statistik
-    total_transaksi = len(df_filtered)
-    total_pendapatan = df_filtered['harga'].sum() if not df_filtered.empty else 0
+    # Hitung statistik cuci mobil
+    total_transaksi_wash = len(df_filtered)
+    total_pendapatan_wash = df_filtered['harga'].sum() if not df_filtered.empty else 0
     transaksi_selesai = len(df_filtered[df_filtered['status'] == 'Selesai'])
     transaksi_proses = len(df_filtered[df_filtered['status'] == 'Dalam Proses'])
+    
+    # Hitung statistik coffee shop
+    total_transaksi_coffee = len(df_coffee_filtered)
+    total_pendapatan_coffee = df_coffee_filtered['total'].sum() if not df_coffee_filtered.empty else 0
+    
+    # Total keseluruhan
+    total_pendapatan_gabungan = total_pendapatan_wash + total_pendapatan_coffee
+    total_transaksi_gabungan = total_transaksi_wash + total_transaksi_coffee
     total_customer = len(df_cust)
     
     # Cards
@@ -702,14 +841,20 @@ def dashboard_page(role):
         <div class="card card-1">
             <div class="card-icon">�</div>
             <div class="card-title">Total Pendapatan</div>
-            <div class="card-value">Rp {total_pendapatan:,.0f}</div>
-            <div class="card-desc">Periode yang dipilih</div>
+            <div class="card-value">Rp {total_pendapatan_gabungan:,.0f}</div>
+            <div class="card-desc">Car Wash + Coffee Shop</div>
         </div>
         <div class="card card-2">
             <div class="card-icon">🚗</div>
-            <div class="card-title">Total Transaksi</div>
-            <div class="card-value">{total_transaksi}</div>
-            <div class="card-desc">Transaksi dalam periode</div>
+            <div class="card-title">Cuci Mobil</div>
+            <div class="card-value">Rp {total_pendapatan_wash:,.0f}</div>
+            <div class="card-desc">{total_transaksi_wash} transaksi</div>
+        </div>
+        <div class="card card-6" style="border-left-color: #f6d365;">
+            <div class="card-icon">☕</div>
+            <div class="card-title">Coffee Shop</div>
+            <div class="card-value">Rp {total_pendapatan_coffee:,.0f}</div>
+            <div class="card-desc">{total_transaksi_coffee} transaksi</div>
         </div>
         <div class="card card-3">
             <div class="card-icon">✅</div>
@@ -731,6 +876,37 @@ def dashboard_page(role):
         </div>
     </div>
     ''', unsafe_allow_html=True)
+    
+    # Business Summary
+    if total_transaksi_gabungan > 0:
+        avg_wash = total_pendapatan_wash / total_transaksi_wash if total_transaksi_wash > 0 else 0
+        avg_coffee = total_pendapatan_coffee / total_transaksi_coffee if total_transaksi_coffee > 0 else 0
+        wash_percentage = (total_pendapatan_wash / total_pendapatan_gabungan * 100) if total_pendapatan_gabungan > 0 else 0
+        coffee_percentage = (total_pendapatan_coffee / total_pendapatan_gabungan * 100) if total_pendapatan_gabungan > 0 else 0
+        
+        st.markdown(f'''
+        <div class="business-summary">
+            <h3>📈 Ringkasan Bisnis</h3>
+            <div class="summary-grid">
+                <div class="summary-item">
+                    <div class="summary-item-label">💵 Rata-rata per Cuci</div>
+                    <div class="summary-item-value">Rp {avg_wash:,.0f}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="summary-item-label">☕ Rata-rata Coffee</div>
+                    <div class="summary-item-value">Rp {avg_coffee:,.0f}</div>
+                </div>
+                <div class="summary-item">
+                    <div class="summary-item-label">🚗 Kontribusi Wash</div>
+                    <div class="summary-item-value">{wash_percentage:.1f}%</div>
+                </div>
+                <div class="summary-item">
+                    <div class="summary-item-label">☕ Kontribusi Coffee</div>
+                    <div class="summary-item-value">{coffee_percentage:.1f}%</div>
+                </div>
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
     
     # Grafik
     if not df_filtered.empty:
@@ -788,39 +964,95 @@ def transaksi_page(role):
         font-size: 1.8rem;
         font-weight: 700;
     }
-    .form-section {
+    .modern-card {
         background: white;
-        padding: 1.5rem;
+        padding: 1rem;
         border-radius: 12px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.08);
-        margin-bottom: 1.5rem;
-    }
-    .section-title {
-        color: #667eea;
-        font-size: 1.1rem;
-        font-weight: 600;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
         margin-bottom: 1rem;
-        padding-bottom: 0.5rem;
-        border-bottom: 2px solid #f0f0f0;
+        border: 1px solid #f0f0f0;
+        transition: all 0.3s ease;
     }
-    .stTextInput > label, .stSelectbox > label {
+    .modern-card:hover {
+        box-shadow: 0 6px 30px rgba(0,0,0,0.12);
+        border-color: #667eea;
+    }
+    .section-header {
+        display: flex;
+        align-items: center;
+        gap: 0.8rem;
+        margin-bottom: 1.5rem;
+        padding-bottom: 1rem;
+        border-bottom: 3px solid #f0f0f0;
+    }
+    .section-header h3 {
+        margin: 0;
+        color: #2d3436;
+        font-size: 1.3rem;
+        font-weight: 700;
+    }
+    .stTextInput > div > div > input, 
+    .stSelectbox > div > div > select,
+    .stTextArea > div > div > textarea {
+        border-radius: 8px !important;
+        border: 2px solid #e0e0e0 !important;
+        padding: 0.4rem 0.6rem !important;
+        transition: all 0.3s ease !important;
+        font-size: 0.95rem !important;
+    }
+    .stTextInput > div > div > input:focus, 
+    .stSelectbox > div > div > select:focus,
+    .stTextArea > div > div > textarea:focus {
+        border-color: #667eea !important;
+        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1) !important;
+    }
+    .stCheckbox {
+        padding: 0.3rem;
+        border-radius: 6px;
+        transition: background 0.2s ease;
+    }
+    .stCheckbox:hover {
+        background: #f8f9fa;
+    }
+    .stCheckbox > label {
         font-weight: 500;
         color: #2d3436;
+    }
+    .stTextInput > label, 
+    .stSelectbox > label, 
+    .stTextArea > label,
+    .stDateInput > label,
+    .stTimeInput > label {
+        font-weight: 600 !important;
+        color: #2d3436 !important;
+        font-size: 0.85rem !important;
+        margin-bottom: 0.3rem !important;
+    }
+    div[data-testid="stButton"] > button {
+        border-radius: 10px !important;
+        font-weight: 600 !important;
+        padding: 0.6rem 1.5rem !important;
+        transition: all 0.3s ease !important;
+    }
+    div[data-testid="stButton"] > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(0,0,0,0.15) !important;
     }
     </style>
     """, unsafe_allow_html=True)
     
-    st.markdown('<div class="trans-header"><h2>🚗 Input Transaksi Cuci Mobil</h2></div>', unsafe_allow_html=True)
+    st.markdown('<div class="trans-header"><h2>🚗  TIME AUTOCARE</h2></div>', unsafe_allow_html=True)
     
     # Hitung jumlah transaksi dalam proses untuk badge
     df_check = get_all_transactions()
     jumlah_proses = len(df_check[df_check['status'] == 'Dalam Proses'])
     jumlah_selesai = len(df_check[df_check['status'] == 'Selesai'])
     
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "📝 Transaksi Baru", 
         f"✅ Selesaikan Transaksi ({jumlah_proses})",
-        f"📚 History Customer ({jumlah_selesai})"
+        f"📚 History Customer ({jumlah_selesai})",
+        "⚙️ Setting Paket Cuci"
     ])
     
     with tab1:
@@ -828,13 +1060,23 @@ def transaksi_page(role):
         paket_cucian = get_paket_cucian()
         checklist_items = get_checklist_datang()
         
-        col1, col2 = st.columns([2, 1])
+        # === SECTION 1: DATA KENDARAAN ===
+        st.markdown("""
+        <div style="margin-bottom: 0.5rem;">
+            <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">🚘 Data Kendaraan</h4>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2 = st.columns([3, 2])
         
         with col1:
-            st.subheader("🚘 Data Kendaraan")
-            
-            nopol_input = st.text_input("🔖 Nomor Polisi *", placeholder="Contoh: B1234XYZ", 
-                                       key="trans_nopol", help="Masukkan nomor polisi kendaraan").upper()
+            nopol_input = st.text_input(
+                "Nomor Polisi", 
+                placeholder="Contoh: B1234XYZ", 
+                key="trans_nopol", 
+                help="Masukkan nomor polisi kendaraan",
+                label_visibility="visible"
+            ).upper()
             
             # Auto-fill dari database
             customer_data = None
@@ -842,46 +1084,78 @@ def transaksi_page(role):
                 customer_data = get_customer_by_nopol(nopol_input)
             
             if customer_data:
-                st.success(f"✅ Customer ditemukan: **{customer_data['nama_customer']}**")
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; padding: 1rem 1.5rem; border-radius: 12px; margin: 1rem 0; box-shadow: 0 3px 12px rgba(67, 233, 123, 0.3);">
+                    <div style="font-size: 1.1rem; font-weight: 600;">✅ Customer Terdaftar</div>
+                    <div style="font-size: 1.3rem; font-weight: 800; margin-top: 0.5rem;">{customer_data['nama_customer']}</div>
+                </div>
+                """, unsafe_allow_html=True)
                 nama_cust = customer_data['nama_customer']
                 telp_cust = customer_data['no_telp']
                 alamat_cust = customer_data['alamat']
                 
-                with st.expander("📋 Lihat Detail Customer", expanded=False):
+                with st.expander("👁️ Lihat Detail Customer", expanded=False):
                     col_a, col_b = st.columns(2)
                     with col_a:
-                        st.write(f"**📌 Nama:** {nama_cust}")
-                        st.write(f"**📞 Telp:** {telp_cust}")
+                        st.write(f"**📞 Telepon:**")
+                        st.info(f"{telp_cust}")
                     with col_b:
-                        st.write(f"**📍 Alamat:** {alamat_cust}")
+                        st.write(f"**📍 Alamat:**")
+                        st.info(f"{alamat_cust}")
             else:
                 if nopol_input:
-                    st.info("ℹ️ Customer baru - silakan isi data")
-                nama_cust = st.text_input("👤 Nama Customer *", key="trans_nama", 
+                    st.markdown("""
+                    <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; padding: 1rem 1.5rem; border-radius: 12px; margin: 1rem 0; box-shadow: 0 3px 12px rgba(240, 147, 251, 0.3);">
+                        <div style="font-size: 1.1rem; font-weight: 600;">🆕 Customer Baru</div>
+                        <div style="font-size: 0.95rem; margin-top: 0.3rem;">Silakan lengkapi data di bawah</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                nama_cust = st.text_input("Nama Customer", key="trans_nama", 
                                          placeholder="Nama lengkap customer")
                 col_tel, col_addr = st.columns(2)
                 with col_tel:
-                    telp_cust = st.text_input("📞 No. Telepon", key="trans_telp", 
+                    telp_cust = st.text_input("No. Telepon", key="trans_telp", 
                                              placeholder="08xxxxxxxxxx")
                 with col_addr:
-                    alamat_cust = st.text_input("📍 Alamat", key="trans_alamat", 
+                    alamat_cust = st.text_input("Alamat", key="trans_alamat", 
                                                placeholder="Alamat customer")
         
         with col2:
-            st.subheader("🕐 Waktu")
+            st.markdown("""
+            <div style="margin-bottom: 0.5rem;">
+                <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">🕐 Waktu Transaksi</h4>
+            </div>
+            """, unsafe_allow_html=True)
             now_wib = datetime.now(WIB)
-            tanggal_trans = st.date_input("📅 Tanggal", value=now_wib.date(), key="trans_date")
-            waktu_masuk = st.time_input("⏰ Waktu Masuk", value=now_wib.time(), key="trans_time")
+            st.info(f"📅 Tanggal: **{now_wib.strftime('%d-%m-%Y')}**")
+            st.info(f"⏰ Waktu Masuk: **{now_wib.strftime('%H:%M:%S')} WIB**")
+            st.caption("Waktu dicatat otomatis oleh sistem")
         
         # Paket cuci
-        st.subheader("📦 Paket Cuci & Harga")
+        st.markdown("""
+        <div style="margin: 1rem 0 0.5rem 0;">
+            <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">📦 Paket Cuci & Harga</h4>
+        </div>
+        """, unsafe_allow_html=True)
         
-        paket = st.selectbox("🧼 Pilih Paket Cuci *", options=list(paket_cucian.keys()), key="trans_paket")
+        col_paket, col_harga = st.columns([3, 2])
+        with col_paket:
+            paket = st.selectbox("Pilih Paket Cuci", options=list(paket_cucian.keys()), key="trans_paket")
+        
         harga = paket_cucian[paket]
-        st.success(f"💰 Harga: **Rp {harga:,.0f}**")
+        with col_harga:
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; padding: 0.8rem; border-radius: 10px; text-align: center; font-size: 1.2rem; font-weight: 800; box-shadow: 0 3px 10px rgba(67, 233, 123, 0.3); margin-top: 1.7rem;">
+                💰 Rp {harga:,.0f}
+            </div>
+            """, unsafe_allow_html=True)
         
         # Checklist saat datang
-        st.subheader("✅ Checklist Kondisi Mobil Saat Datang")
+        st.markdown("""
+        <div style="margin: 1rem 0 0.5rem 0;">
+            <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">✅ Checklist Kondisi Mobil Saat Datang</h4>
+        </div>
+        """, unsafe_allow_html=True)
         
         selected_checks = []
         cols = st.columns(3)
@@ -891,7 +1165,11 @@ def transaksi_page(role):
                     selected_checks.append(item)
         
         # QC Barang dalam mobil
-        st.subheader("📋 QC Barang dalam Mobil")
+        st.markdown("""
+        <div style="margin: 1rem 0 0.5rem 0;">
+            <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">📋 QC Barang dalam Mobil</h4>
+        </div>
+        """, unsafe_allow_html=True)
         qc_barang = st.text_area("📝 Catat barang-barang di dalam mobil", 
                                  placeholder="Contoh:\n• Dompet di dashboard\n• HP di tempat HP\n• Karpet di bagasi\n• Payung di pintu",
                                  key="trans_qc_barang", height=120)
@@ -901,13 +1179,14 @@ def transaksi_page(role):
                               key="trans_catatan", height=80)
         
         # Submit button
-        col1, col2, col3 = st.columns([2, 1, 2])
+        st.markdown("<br>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            submit_btn = st.button("💾 Simpan Transaksi", type="primary", use_container_width=True)
+            submit_btn = st.button("💾 Simpan Transaksi", type="primary", use_container_width=True, key="submit_trans_new")
         
         if submit_btn:
             if not nopol_input or not nama_cust or not paket:
-                st.error("❌ Mohon isi semua field yang wajib (*)")
+                st.error("❌ Mohon isi Nomor Polisi, Nama Customer, dan Paket Cuci")
             else:
                 # Simpan customer baru jika belum ada
                 if not customer_data:
@@ -916,12 +1195,17 @@ def transaksi_page(role):
                         st.error(f"❌ Gagal menyimpan customer: {msg}")
                         st.stop()
                 
+                # Gunakan waktu sistem otomatis
+                now_wib = datetime.now(WIB)
+                tanggal_str = now_wib.strftime('%d-%m-%Y')
+                waktu_str = now_wib.strftime('%H:%M:%S')
+                
                 # Simpan transaksi
                 trans_data = {
                     'nopol': nopol_input,
                     'nama_customer': nama_cust,
-                    'tanggal': tanggal_trans.strftime('%d-%m-%Y'),
-                    'waktu_masuk': waktu_masuk.strftime('%H:%M:%S'),
+                    'tanggal': tanggal_str,
+                    'waktu_masuk': waktu_str,
                     'waktu_selesai': '',
                     'paket_cuci': paket,
                     'harga': harga,
@@ -937,13 +1221,75 @@ def transaksi_page(role):
                 if success:
                     add_audit("transaksi_baru", f"Nopol: {nopol_input}, Paket: {paket}, Harga: Rp {harga:,.0f}")
                     st.success(f"✅ {msg}")
-                    st.balloons()
-                    st.rerun()
+                    
+                    # Generate konfirmasi WhatsApp untuk customer
+                    if telp_cust:
+                        toko_info = get_toko_info()
+                        
+                        # Format checklist
+                        checklist_str = '\n'.join([f"• {item}" for item in selected_checks])
+                        
+                        # Generate pesan konfirmasi
+                        konfirmasi_message = f"""*KONFIRMASI PENERIMAAN KENDARAAN*
+*{toko_info.get('nama', 'TIME AUTOCARE')}*
+_{toko_info.get('tagline', 'Detailing & Ceramic Coating')}_
+
+📅 *DETAIL TRANSAKSI*
+
+🔖 Nopol: *{nopol_input}*
+👤 Customer: {nama_cust}
+📅 Tanggal: {tanggal_str}
+⏰ Waktu Masuk: {waktu_str} WIB
+
+📦 *Paket: {paket}*
+💰 *Harga: Rp {harga:,.0f}*
+
+✅ *CHECKLIST KONDISI SAAT DATANG:*
+{checklist_str}
+"""
+                        
+                        if qc_barang:
+                            konfirmasi_message += f"\n📋 *BARANG DI DALAM MOBIL:*\n{qc_barang}\n"
+                        
+                        if catatan:
+                            konfirmasi_message += f"\n📝 *CATATAN:*\n{catatan}\n"
+                        
+                        konfirmasi_message += f"""\n{'='*35}
+
+🔧 *STATUS: DALAM PROSES*
+
+Mobil Anda sedang dalam proses pengerjaan.
+Kami akan menghubungi Anda setelah selesai.
+
+Terima kasih atas kepercayaan Anda! 🙏
+
+📍 {toko_info.get('alamat', '')}
+📞 {toko_info.get('telp', '')}"""
+                        
+                        whatsapp_link = create_whatsapp_link(telp_cust, konfirmasi_message)
+                        
+                        st.markdown("---")
+                        st.markdown("### 📱 Konfirmasi Penerimaan Kendaraan")
+                        st.markdown(f"**Customer:** {nama_cust}")
+                        st.markdown(f"**No. Telp:** {telp_cust}")
+                        st.link_button("💬 Kirim Konfirmasi via WhatsApp", whatsapp_link, use_container_width=True, type="primary")
+                        
+                        with st.expander("👁️ Preview Pesan Konfirmasi"):
+                            st.text(konfirmasi_message)
+                        
+                        st.info("ℹ️ Silakan klik tombol di atas untuk mengirim konfirmasi penerimaan kendaraan ke customer")
+                    else:
+                        st.balloons()
+                        st.rerun()
                 else:
                     st.error(f"❌ {msg}")
     
     with tab2:
-        st.subheader("✅ Selesaikan Transaksi")
+        st.markdown("""
+        <div style="margin-bottom: 0.5rem;">
+            <h4 style="margin: 0; color: #2d3436; font-size: 1.1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">✅ Selesaikan Transaksi</h4>
+        </div>
+        """, unsafe_allow_html=True)
         
         checklist_selesai_items = get_checklist_selesai()
         
@@ -972,37 +1318,63 @@ def transaksi_page(role):
                     st.dataframe(df_proses[['id', 'nopol', 'tanggal', 'status', 'waktu_masuk']])
         
         if df_proses.empty:
-            st.info("📭 Tidak ada transaksi yang sedang dalam proses")
-            st.success("✨ Semua transaksi sudah selesai dikerjakan!")
+            st.markdown("""
+            <div style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; padding: 2rem; border-radius: 12px; text-align: center; margin: 2rem 0;">
+                <div style="font-size: 3rem; margin-bottom: 1rem;">🎉</div>
+                <div style="font-size: 1.3rem; font-weight: 600; margin-bottom: 0.5rem;">Semua Transaksi Selesai!</div>
+                <div style="font-size: 1rem; opacity: 0.9;">Tidak ada transaksi yang sedang dalam proses</div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.success(f"📋 **{len(df_proses)} transaksi** sedang dalam proses")
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 1rem 1.5rem; border-radius: 10px; margin-bottom: 1rem; box-shadow: 0 3px 10px rgba(102, 126, 234, 0.3);">
+                <div style="font-size: 1.1rem; font-weight: 600;">📋 {len(df_proses)} Transaksi Sedang Dalam Proses</div>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Pilih transaksi - HANYA dari df_proses yang sudah difilter
-            trans_display = df_proses[['id', 'tanggal', 'waktu_masuk', 'nopol', 'nama_customer', 'paket_cuci', 'status']].copy()
+            # Tampilkan tabel transaksi dengan checkbox
+            st.markdown("""
+            <div style="margin: 1rem 0 0.5rem 0;">
+                <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">📊 Daftar Transaksi Dalam Proses</h4>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Validasi sekali lagi bahwa semua status adalah "Dalam Proses"
-            trans_display = trans_display[trans_display['status'].str.strip() == 'Dalam Proses'].copy()
+            # Buat tabel untuk display dengan checkbox
+            df_display = df_proses[['id', 'tanggal', 'waktu_masuk', 'nopol', 'nama_customer', 'paket_cuci', 'harga']].copy()
+            df_display.insert(0, 'Pilih', False)  # Tambahkan kolom checkbox di awal
+            df_display['harga'] = df_display['harga'].apply(lambda x: f"Rp {x:,.0f}")
+            df_display.columns = ['Pilih', 'ID', 'Tanggal', 'Jam Masuk', 'Nopol', 'Customer', 'Paket', 'Harga']
             
-            if trans_display.empty:
-                st.error("❌ Error: Data transaksi tidak valid. Silakan refresh halaman.")
-                st.stop()
-            
-            trans_display['display'] = trans_display.apply(
-                lambda x: f"🚗 {x['tanggal']} {x['waktu_masuk']} - {x['nopol']} - {x['nama_customer']} ({x['paket_cuci']})", axis=1
+            # Tampilkan tabel dengan data editor untuk checkbox
+            edited_df = st.data_editor(
+                df_display,
+                use_container_width=True,
+                hide_index=True,
+                height=min(400, (len(df_display) + 1) * 35 + 3),
+                column_config={
+                    "Pilih": st.column_config.CheckboxColumn(
+                        "Pilih",
+                        help="Centang untuk memilih transaksi",
+                        default=False,
+                    )
+                },
+                disabled=["ID", "Tanggal", "Jam Masuk", "Nopol", "Customer", "Paket", "Harga"],
+                key="trans_table_editor"
             )
             
-            # Dropdown hanya berisi transaksi "Dalam Proses"
-            selected_display = st.selectbox("🔍 Pilih Transaksi yang Akan Diselesaikan", 
-                                          options=trans_display['display'].tolist(), 
-                                          key="finish_trans",
-                                          help="Hanya menampilkan transaksi dengan status 'Dalam Proses'")
+            # Cek apakah ada transaksi yang dipilih dari checkbox
+            selected_rows = edited_df[edited_df['Pilih'] == True]
             
-            # Pastikan ID dalam format integer Python
-            selected_id = int(trans_display[trans_display['display'] == selected_display]['id'].iloc[0])
+            if len(selected_rows) == 0:
+                st.info("ℹ️ Centang checkbox pada tabel di atas untuk memilih transaksi yang akan diselesaikan")
+                st.stop()
+            elif len(selected_rows) > 1:
+                st.warning("⚠️ Silakan pilih hanya satu transaksi untuk diselesaikan")
+                st.stop()
+            
+            # Dapatkan ID dari transaksi yang dipilih
+            selected_id = selected_rows.iloc[0]['ID']
             selected_trans = df_proses[df_proses['id'] == selected_id].iloc[0]
-            
-            # Debug info - tampilkan ID dan status
-            st.info(f"🔍 ID Transaksi: **{selected_id}** | Status: **'{selected_trans['status']}'** | Tipe: {type(selected_id).__name__}")
             
             # Double check status
             if selected_trans['status'].strip() != 'Dalam Proses':
@@ -1013,75 +1385,108 @@ def transaksi_page(role):
                 st.rerun()
                 st.stop()
             
-            # Tampilkan detail
-            with st.expander("📄 Detail Transaksi", expanded=True):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.markdown(f"**🔖 Nopol:** `{selected_trans['nopol']}`")
-                    st.markdown(f"**👤 Customer:** {selected_trans['nama_customer']}")
-                with col2:
-                    st.markdown(f"**📅 Tanggal:** {selected_trans['tanggal']}")
-                    st.markdown(f"**⏰ Waktu Masuk:** {selected_trans['waktu_masuk']}")
-                with col3:
-                    st.markdown(f"**📦 Paket:** {selected_trans['paket_cuci']}")
-                    st.markdown(f"**💰 Harga:** Rp {selected_trans['harga']:,.0f}")
-                
-                st.markdown("---")
-                
-                # Checklist saat datang
-                try:
-                    checks_datang = json.loads(selected_trans['checklist_datang'])
-                    if checks_datang:
-                        st.markdown("**✅ Checklist Kondisi Saat Datang:**")
-                        cols = st.columns(3)
-                        for idx, check in enumerate(checks_datang):
-                            with cols[idx % 3]:
-                                st.markdown(f"✓ {check}")
-                except:
-                    pass
-                
-                if selected_trans['qc_barang']:
-                    st.markdown("**📋 Barang dalam Mobil:**")
-                    st.info(selected_trans['qc_barang'])
-                
-                if selected_trans['catatan']:
-                    st.markdown("**💬 Catatan:**")
-                    st.warning(selected_trans['catatan'])
             
-            # Input waktu selesai
-            st.subheader("⏰ Waktu Penyelesaian")
-            now_wib = datetime.now(WIB)
-            waktu_selesai = st.time_input("🕐 Waktu Selesai", value=now_wib.time(), key="finish_time")
+            # Checklist Kondisi Saat Datang - harus dicheck ulang untuk memastikan kondisi tetap sesuai
+            st.markdown("""
+            <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
+                <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">✅ Checklist Kondisi Saat Datang</h4>
+                <p style="font-size: 0.85rem; color: #6c757d; margin: 0.5rem 0;">⚠️ Pastikan kondisi setelah dibersihkan masih sesuai dengan saat datang</p>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Checklist selesai
-            st.subheader("✅ Checklist QC Selesai Cuci")
+            selected_checks_datang_ulang = []
+            try:
+                checks_datang = json.loads(selected_trans['checklist_datang'])
+                if checks_datang:
+                    cols = st.columns(3)
+                    for idx, check in enumerate(checks_datang):
+                        with cols[idx % 3]:
+                            # Checkbox untuk konfirmasi ulang kondisi masih sesuai
+                            if st.checkbox(check, key=f"check_datang_ulang_{idx}", value=False):
+                                selected_checks_datang_ulang.append(check)
+                else:
+                    st.info("ℹ️ Tidak ada checklist kondisi saat datang")
+            except:
+                st.info("ℹ️ Tidak ada checklist kondisi saat datang")
+            
+            if selected_trans['qc_barang']:
+                st.markdown("""
+                <div style="margin-top: 0.8rem;">
+                    <div style="font-size: 0.9rem; font-weight: 600; color: #2d3436; margin-bottom: 0.4rem;">📋 Barang dalam Mobil</div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.info(selected_trans['qc_barang'])
+            
+            if selected_trans['catatan']:
+                st.markdown("""
+                <div style="margin-top: 0.8rem;">
+                    <div style="font-size: 0.9rem; font-weight: 600; color: #2d3436; margin-bottom: 0.4rem;">💬 Catatan Tambahan</div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.warning(selected_trans['catatan'])
+        
+            
+            # Checklist selesai dengan design modern
+            st.markdown("""
+            <div style="margin: 1.5rem 0 0.5rem 0;">
+                <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">✅ Checklist QC Selesai Cuci</h4>
+            </div>
+            """, unsafe_allow_html=True)
             
             selected_checks_selesai = []
             cols = st.columns(3)
             for idx, item in enumerate(checklist_selesai_items):
                 with cols[idx % 3]:
-                    if st.checkbox(item, key=f"check_done_{idx}", value=True):
+                    if st.checkbox(item, key=f"check_done_{idx}", value=False):
                         selected_checks_selesai.append(item)
             
-            # QC final barang
-            st.subheader("📋 Konfirmasi Final")
-            qc_final = st.text_area("✓ Konfirmasi Barang Customer Kembali Lengkap", 
-                                   value=selected_trans['qc_barang'],
-                                   placeholder="Pastikan semua barang customer kembali lengkap",
-                                   key="finish_qc", height=100)
+            # QC final barang dengan design modern
+            st.markdown("""
+            <div style="margin: 1.2rem 0 0.5rem 0;">
+                <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">📋 Konfirmasi Final</h4>
+            </div>
+            """, unsafe_allow_html=True)
             
-            catatan_final = st.text_area("� Catatan Penyelesaian", 
-                                        placeholder="Hasil pengerjaan, kondisi akhir, dll...", 
-                                        key="finish_catatan", height=80)
+            st.markdown("""
+            <div style="margin: 0.5rem 0 0.3rem 0;">
+                <label style="font-weight: 600; color: #2d3436; font-size: 0.85rem;">✓ Konfirmasi Barang Customer Kembali Lengkap</label>
+            </div>
+            """, unsafe_allow_html=True)
             
-            # Finish button
-            col1, col2, col3 = st.columns([2, 1, 2])
+            qc_final = st.text_area(
+                "Konfirmasi Barang",
+                value=selected_trans['qc_barang'],
+                placeholder="Pastikan semua barang customer kembali lengkap",
+                key="finish_qc", 
+                height=100,
+                label_visibility="collapsed"
+            )
+            
+            st.markdown("""
+            <div style="margin: 0.8rem 0 0.3rem 0;">
+                <label style="font-weight: 600; color: #2d3436; font-size: 0.85rem;">📝 Catatan Penyelesaian</label>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            catatan_final = st.text_area(
+                "Catatan Penyelesaian",
+                placeholder="Hasil pengerjaan, kondisi akhir, dll...", 
+                key="finish_catatan", 
+                height=80,
+                label_visibility="collapsed"
+            )
+            
+            # Finish button dengan design modern
+            st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
+            col1, col2, col3 = st.columns([1.5, 2, 1.5])
             with col2:
                 finish_btn = st.button("✅ Selesaikan Transaksi", type="primary", use_container_width=True, key="btn_finish_trans")
             
             if finish_btn:
                 # Validasi checklist minimal harus ada
-                if not selected_checks_selesai:
+                if not selected_checks_datang_ulang:
+                    st.error("❌ Mohon centang checklist kondisi saat datang untuk memastikan kondisi setelah dibersihkan masih sesuai!")
+                elif not selected_checks_selesai:
                     st.error("❌ Mohon pilih minimal 1 checklist QC selesai!")
                 elif not qc_final or qc_final.strip() == "":
                     st.error("❌ Mohon isi konfirmasi barang customer!")
@@ -1110,9 +1515,12 @@ def transaksi_page(role):
                     # Pastikan ID adalah integer
                     trans_id_to_update = int(selected_id)
                     
+                    # Gunakan waktu sistem otomatis saat tombol diklik
+                    waktu_selesai_otomatis = datetime.now(WIB).strftime('%H:%M:%S')
+                    
                     success, msg = update_transaction_finish(
                         trans_id_to_update,
-                        waktu_selesai.strftime('%H:%M:%S'),
+                        waktu_selesai_otomatis,
                         json.dumps(selected_checks_selesai),
                         qc_final,
                         catatan_final
@@ -1162,121 +1570,325 @@ def transaksi_page(role):
             if not df_selesai.empty:
                 st.markdown("---")
                 
-                # Pilih transaksi untuk lihat detail
-                with st.expander("👁️ Lihat Detail Transaksi"):
-                    trans_display = df_selesai[['id', 'tanggal', 'waktu_masuk', 'waktu_selesai', 'nopol', 'nama_customer', 'paket_cuci', 'harga']].copy()
-                    trans_display['display'] = trans_display.apply(
-                        lambda x: f"✅ {x['tanggal']} | {x['waktu_masuk']}-{x['waktu_selesai']} | {x['nopol']} - {x['nama_customer']} | {x['paket_cuci']} (Rp {x['harga']:,.0f})", axis=1
-                    )
-                    
-                    selected_history = st.selectbox("Pilih Transaksi", 
-                                                   options=trans_display['display'].tolist(), 
-                                                   key="select_history")
-                    selected_hist_id = trans_display[trans_display['display'] == selected_history]['id'].iloc[0]
-                    selected_hist = df_selesai[df_selesai['id'] == selected_hist_id].iloc[0]
-                    
-                    # Detail lengkap
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.markdown("**📋 Info Dasar**")
-                        st.write(f"🔖 Nopol: `{selected_hist['nopol']}`")
-                        st.write(f"👤 Customer: {selected_hist['nama_customer']}")
-                        # Ambil telp dari tabel customer jika ada
-                        cust_data = get_customer_by_nopol(selected_hist['nopol'])
-                        telp_display = cust_data['no_telp'] if cust_data and cust_data.get('no_telp') else '-'
-                        st.write(f"📞 Telp: {telp_display}")
-                        st.write(f"📦 Paket: {selected_hist['paket_cuci']}")
-                        st.write(f"💰 Harga: Rp {selected_hist['harga']:,.0f}")
-                    
-                    with col2:
-                        st.markdown("**⏰ Waktu**")
-                        st.write(f"📅 Tanggal: {selected_hist['tanggal']}")
-                        st.write(f"🕐 Masuk: {selected_hist['waktu_masuk']}")
-                        st.write(f"🕐 Selesai: {selected_hist['waktu_selesai']}")
-                        st.write(f"👤 Oleh: {selected_hist['created_by']}")
-                    
-                    with col3:
-                        st.markdown("**✅ Checklist & QC**")
-                        try:
-                            checks = json.loads(selected_hist['checklist_datang'])
-                            st.write("Saat Datang:")
-                            for check in checks[:3]:
-                                st.write(f"✓ {check}")
-                        except:
-                            pass
-                        
-                        try:
-                            checks_done = json.loads(selected_hist['checklist_selesai'])
-                            st.write("Saat Selesai:")
-                            for check in checks_done[:3]:
-                                st.write(f"✓ {check}")
-                        except:
-                            pass
-                    
-                    if selected_hist['catatan']:
-                        st.markdown("**💬 Catatan:**")
-                        st.info(selected_hist['catatan'])
-                    
-                    # Tombol kirim invoice via WhatsApp
-                    st.markdown("---")
-                    st.markdown("**📱 Kirim Invoice via WhatsApp**")
-                    
-                    # Ambil nomor telepon customer
-                    cust_data = get_customer_by_nopol(selected_hist['nopol'])
-                    phone_number = cust_data['no_telp'] if cust_data and cust_data.get('no_telp') else None
-                    
-                    if phone_number and phone_number.strip():
-                        col_wa1, col_wa2 = st.columns([3, 2])
-                        with col_wa1:
-                            st.info(f"📞 Nomor Tujuan: **{phone_number}**")
-                        with col_wa2:
-                            # Generate invoice message
-                            toko_info = get_setting("toko_info") or {
-                                "nama": "CUCI MOBIL BERSIH",
-                                "alamat": "Jl. Contoh No. 123",
-                                "telp": "08123456789",
-                                "email": "info@cucimobil.com"
-                            }
-                            
-                            invoice_message = generate_invoice_message(selected_hist.to_dict(), toko_info)
-                            wa_link = create_whatsapp_link(phone_number, invoice_message)
-                            
-                            # Tombol WhatsApp dengan link
-                            st.markdown(f"""
-                                <a href="{wa_link}" target="_blank">
-                                    <button style="
-                                        background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
-                                        color: white;
-                                        border: none;
-                                        padding: 12px 24px;
-                                        border-radius: 10px;
-                                        font-size: 16px;
-                                        font-weight: 600;
-                                        cursor: pointer;
-                                        box-shadow: 0 4px 15px rgba(37, 211, 102, 0.3);
-                                        width: 100%;
-                                        transition: all 0.3s ease;
-                                    " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(37, 211, 102, 0.4)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(37, 211, 102, 0.3)';">
-                                        💬 Kirim Invoice
-                                    </button>
-                                </a>
-                            """, unsafe_allow_html=True)
-                        
-                        # Preview pesan
-                        with st.expander("👁️ Preview Pesan Invoice"):
-                            st.text(invoice_message)
-                    else:
-                        st.warning("⚠️ Nomor telepon customer belum terdaftar. Silakan update data customer terlebih dahulu.")
-                
-                # Tabel ringkas
+                # Tabel dengan checkbox
                 st.markdown("### 📊 Daftar Transaksi Selesai")
-                df_display = df_selesai[['tanggal', 'waktu_masuk', 'waktu_selesai', 'nopol', 'nama_customer', 'paket_cuci', 'harga']].copy()
-                df_display.columns = ['📅 Tanggal', '⏰ Masuk', '⏰ Selesai', '🔖 Nopol', '👤 Customer', '📦 Paket', '💰 Harga']
-                df_display['💰 Harga'] = df_display['💰 Harga'].apply(lambda x: f"Rp {x:,.0f}")
+                df_display = df_selesai[['id', 'tanggal', 'waktu_masuk', 'waktu_selesai', 'nopol', 'nama_customer', 'paket_cuci', 'harga']].copy()
+                df_display.insert(0, 'Pilih', False)  # Tambahkan kolom checkbox
+                df_display['harga'] = df_display['harga'].apply(lambda x: f"Rp {x:,.0f}")
+                df_display.columns = ['Pilih', 'ID', '📅 Tanggal', '⏰ Masuk', '⏰ Selesai', '🔖 Nopol', '👤 Customer', '📦 Paket', '💰 Harga']
                 
-                st.dataframe(df_display, use_container_width=True, hide_index=True)
+                # Tampilkan tabel dengan data editor untuk checkbox
+                edited_df_selesai = st.data_editor(
+                    df_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Pilih": st.column_config.CheckboxColumn(
+                            "Pilih",
+                            help="Centang untuk melihat detail atau kirim invoice",
+                            default=False,
+                        )
+                    },
+                    disabled=["ID", "📅 Tanggal", "⏰ Masuk", "⏰ Selesai", "🔖 Nopol", "👤 Customer", "📦 Paket", "💰 Harga"],
+                    key="history_table_editor"
+                )
+                
+                # Cek apakah ada transaksi yang dipilih
+                selected_rows_selesai = edited_df_selesai[edited_df_selesai['Pilih'] == True]
+                
+                if len(selected_rows_selesai) > 0:
+                    if len(selected_rows_selesai) > 1:
+                        st.warning("⚠️ Silakan pilih hanya satu transaksi untuk melihat detail")
+                    else:
+                        # Ambil transaksi yang dipilih
+                        selected_hist_id = selected_rows_selesai.iloc[0]['ID']
+                        selected_hist = df_selesai[df_selesai['id'] == selected_hist_id].iloc[0]
+                        
+                        st.markdown("---")
+                        st.markdown("### 📋 Detail Transaksi Terpilih")
+                        
+                        # Detail lengkap
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.markdown("**📋 Info Dasar**")
+                            st.write(f"🔖 Nopol: `{selected_hist['nopol']}`")
+                            st.write(f"👤 Customer: {selected_hist['nama_customer']}")
+                            # Ambil telp dari tabel customer jika ada
+                            cust_data = get_customer_by_nopol(selected_hist['nopol'])
+                            telp_display = cust_data['no_telp'] if cust_data and cust_data.get('no_telp') else '-'
+                            st.write(f"📞 Telp: {telp_display}")
+                            st.write(f"📦 Paket: {selected_hist['paket_cuci']}")
+                            st.write(f"💰 Harga: Rp {selected_hist['harga']:,.0f}")
+                        
+                        with col2:
+                            st.markdown("**⏰ Waktu**")
+                            st.write(f"📅 Tanggal: {selected_hist['tanggal']}")
+                            st.write(f"🕐 Masuk: {selected_hist['waktu_masuk']}")
+                            st.write(f"🕐 Selesai: {selected_hist['waktu_selesai']}")
+                            st.write(f"👤 Oleh: {selected_hist['created_by']}")
+                        
+                        with col3:
+                            st.markdown("**✅ Checklist & QC**")
+                            try:
+                                checks = json.loads(selected_hist['checklist_datang'])
+                                st.write("Saat Datang:")
+                                for check in checks[:3]:
+                                    st.write(f"✓ {check}")
+                            except:
+                                pass
+                            
+                            try:
+                                checks_done = json.loads(selected_hist['checklist_selesai'])
+                                st.write("Saat Selesai:")
+                                for check in checks_done[:3]:
+                                    st.write(f"✓ {check}")
+                            except:
+                                pass
+                        
+                        if selected_hist['catatan']:
+                            st.markdown("**💬 Catatan:**")
+                            st.info(selected_hist['catatan'])
+                        
+                        # Tombol kirim invoice via WhatsApp
+                        st.markdown("---")
+                        st.markdown("**📱 Kirim Invoice via WhatsApp**")
+                        
+                        # Ambil nomor telepon customer
+                        cust_data = get_customer_by_nopol(selected_hist['nopol'])
+                        phone_number = cust_data['no_telp'] if cust_data and cust_data.get('no_telp') else None
+                        
+                        if phone_number and phone_number.strip():
+                            col_wa1, col_wa2 = st.columns([3, 2])
+                            with col_wa1:
+                                st.info(f"📞 Nomor Tujuan: **{phone_number}**")
+                            with col_wa2:
+                                # Generate invoice message
+                                toko_info = get_setting("toko_info") or {
+                                    "nama": "TIME AUTOCARE",
+                                    "tagline": "Detailing & Ceramic Coating",
+                                    "alamat": "Jl. Contoh No. 123",
+                                    "telp": "08123456789",
+                                    "email": "info@timeautocare.com"
+                                }
+                                
+                                invoice_message = generate_invoice_message(selected_hist.to_dict(), toko_info)
+                                wa_link = create_whatsapp_link(phone_number, invoice_message)
+                                
+                                # Tombol WhatsApp dengan link
+                                st.markdown(f"""
+                                    <a href="{wa_link}" target="_blank">
+                                        <button style="
+                                            background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+                                            color: white;
+                                            border: none;
+                                            padding: 12px 24px;
+                                            border-radius: 10px;
+                                            font-size: 16px;
+                                            font-weight: 600;
+                                            cursor: pointer;
+                                            box-shadow: 0 4px 15px rgba(37, 211, 102, 0.3);
+                                            width: 100%;
+                                            transition: all 0.3s ease;
+                                        " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(37, 211, 102, 0.4)';" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 15px rgba(37, 211, 102, 0.3)';">
+                                            💬 Kirim Invoice
+                                        </button>
+                                    </a>
+                                """, unsafe_allow_html=True)
+                            
+                            # Preview pesan
+                            with st.expander("👁️ Preview Pesan Invoice"):
+                                st.text(invoice_message)
+                        else:
+                            st.warning("⚠️ Nomor telepon customer belum terdaftar. Silakan update data customer terlebih dahulu.")
+                else:
+                    st.info("ℹ️ Centang checkbox pada tabel untuk melihat detail transaksi dan mengirim invoice")
             else:
                 st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
+    
+    with tab4:
+        st.subheader("⚙️ Setting Paket Cuci & Checklist")
+        
+        # Check role
+        if role not in ["Admin", "Supervisor"]:
+            st.warning("⚠️ Hanya Admin dan Supervisor yang dapat mengakses setting ini")
+            return
+        
+        subtab1, subtab2, subtab3 = st.tabs(["📦 Paket Cuci", "✅ Checklist Datang", "✓ Checklist Selesai"])
+        
+        with subtab1:
+            st.markdown("##### 📦 Kelola Paket Cucian")
+            
+            # Load paket cucian
+            paket_cucian = get_paket_cucian()
+            
+            st.info("ℹ️ Tambah, edit, atau hapus paket cucian yang tersedia")
+            
+            # Tampilkan paket yang ada
+            st.markdown("**Paket Cucian Saat Ini:**")
+            menu_updated = paket_cucian.copy()
+            
+            for idx, (nama, harga) in enumerate(paket_cucian.items()):
+                col1, col2, col3 = st.columns([3, 2, 1])
+                with col1:
+                    new_nama = st.text_input("Nama Paket", value=nama, key=f"paket_nama_{idx}", label_visibility="collapsed")
+                with col2:
+                    new_harga = st.number_input("Harga", value=int(harga), min_value=0, step=5000, key=f"paket_harga_{idx}", label_visibility="collapsed")
+                with col3:
+                    if st.button("🗑️", key=f"del_paket_{idx}", help="Hapus paket ini"):
+                        del menu_updated[nama]
+                        success, msg = update_setting("paket_cucian", menu_updated)
+                        if success:
+                            st.success(f"✅ {nama} berhasil dihapus")
+                            add_audit("paket_delete", f"Hapus paket: {nama}")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                
+                # Update jika berubah
+                if new_nama != nama or new_harga != harga:
+                    if new_nama and new_harga > 0:
+                        if nama in menu_updated:
+                            del menu_updated[nama]
+                        menu_updated[new_nama] = new_harga
+            
+            st.markdown("---")
+            
+            # Tambah paket baru
+            st.markdown("**➕ Tambah Paket Baru:**")
+            col1, col2, col3 = st.columns([3, 2, 1])
+            with col1:
+                nama_baru = st.text_input("Nama Paket Baru", key="new_paket_nama", placeholder="Contoh: Cuci Express")
+            with col2:
+                harga_baru = st.number_input("Harga", value=50000, min_value=0, step=5000, key="new_paket_harga")
+            with col3:
+                if st.button("➕ Tambah", key="add_paket"):
+                    if nama_baru and harga_baru > 0:
+                        if nama_baru in menu_updated:
+                            st.error(f"❌ Paket '{nama_baru}' sudah ada!")
+                        else:
+                            menu_updated[nama_baru] = harga_baru
+                            success, msg = update_setting("paket_cucian", menu_updated)
+                            if success:
+                                st.success(f"✅ Paket '{nama_baru}' berhasil ditambahkan")
+                                add_audit("paket_add", f"Tambah paket: {nama_baru} - Rp {harga_baru:,.0f}")
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                    else:
+                        st.error("❌ Mohon isi nama dan harga paket")
+            
+            st.markdown("---")
+            
+            if st.button("💾 Simpan Semua Perubahan Paket", type="primary", use_container_width=True):
+                success, msg = update_setting("paket_cucian", menu_updated)
+                if success:
+                    st.success("✅ Semua perubahan paket berhasil disimpan!")
+                    add_audit("paket_update", "Update paket cucian")
+                    st.rerun()
+                else:
+                    st.error(msg)
+        
+        with subtab2:
+            st.markdown("##### ✅ Kelola Checklist Mobil Datang")
+            
+            checklist_datang = get_checklist_datang()
+            
+            st.info("ℹ️ Checklist untuk memeriksa kondisi mobil saat pertama datang")
+            
+            # Tampilkan checklist yang ada
+            new_checklist = []
+            for idx, item in enumerate(checklist_datang):
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    new_item = st.text_input(f"Item {idx+1}", value=item, key=f"check_datang_{idx}", label_visibility="collapsed")
+                    if new_item:
+                        new_checklist.append(new_item)
+                with col2:
+                    if st.button("🗑️", key=f"del_check_datang_{idx}", help="Hapus item"):
+                        pass  # Item akan terhapus karena tidak masuk new_checklist
+            
+            st.markdown("---")
+            
+            # Tambah item baru
+            st.markdown("**➕ Tambah Item Baru:**")
+            col1, col2 = st.columns([5, 1])
+            with col1:
+                item_baru = st.text_input("Item Checklist Baru", key="new_check_datang", placeholder="Contoh: Kondisi interior bersih")
+            with col2:
+                if st.button("➕", key="add_check_datang"):
+                    if item_baru:
+                        new_checklist.append(item_baru)
+                        success, msg = update_setting("checklist_datang", new_checklist)
+                        if success:
+                            st.success(f"✅ Item '{item_baru}' berhasil ditambahkan")
+                            add_audit("checklist_add", f"Tambah checklist datang: {item_baru}")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                    else:
+                        st.error("❌ Mohon isi item checklist")
+            
+            st.markdown("---")
+            
+            if st.button("💾 Simpan Perubahan Checklist", type="primary", use_container_width=True, key="save_checklist_datang"):
+                success, msg = update_setting("checklist_datang", new_checklist if new_checklist else checklist_datang)
+                if success:
+                    st.success("✅ Checklist datang berhasil disimpan!")
+                    add_audit("checklist_update", "Update checklist datang")
+                    st.rerun()
+                else:
+                    st.error(msg)
+        
+        with subtab3:
+            st.markdown("##### ✓ Kelola Checklist QC Selesai")
+            
+            checklist_selesai = get_checklist_selesai()
+            
+            st.info("ℹ️ Checklist untuk quality control setelah selesai cuci")
+            
+            # Tampilkan checklist yang ada
+            new_checklist_selesai = []
+            for idx, item in enumerate(checklist_selesai):
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    new_item = st.text_input(f"Item {idx+1}", value=item, key=f"check_selesai_{idx}", label_visibility="collapsed")
+                    if new_item:
+                        new_checklist_selesai.append(new_item)
+                with col2:
+                    if st.button("🗑️", key=f"del_check_selesai_{idx}", help="Hapus item"):
+                        pass  # Item akan terhapus karena tidak masuk new_checklist_selesai
+            
+            st.markdown("---")
+            
+            # Tambah item baru
+            st.markdown("**➕ Tambah Item Baru:**")
+            col1, col2 = st.columns([5, 1])
+            with col1:
+                item_baru_selesai = st.text_input("Item Checklist Baru", key="new_check_selesai", placeholder="Contoh: Velg mengkilap")
+            with col2:
+                if st.button("➕", key="add_check_selesai"):
+                    if item_baru_selesai:
+                        new_checklist_selesai.append(item_baru_selesai)
+                        success, msg = update_setting("checklist_selesai", new_checklist_selesai)
+                        if success:
+                            st.success(f"✅ Item '{item_baru_selesai}' berhasil ditambahkan")
+                            add_audit("checklist_add", f"Tambah checklist selesai: {item_baru_selesai}")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                    else:
+                        st.error("❌ Mohon isi item checklist")
+            
+            st.markdown("---")
+            
+            if st.button("💾 Simpan Perubahan Checklist", type="primary", use_container_width=True, key="save_checklist_selesai"):
+                success, msg = update_setting("checklist_selesai", new_checklist_selesai if new_checklist_selesai else checklist_selesai)
+                if success:
+                    st.success("✅ Checklist selesai berhasil disimpan!")
+                    add_audit("checklist_update", "Update checklist selesai")
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 
 def coffee_shop_page(role):
@@ -1289,85 +1901,233 @@ def coffee_shop_page(role):
 
     st.markdown('<div class="coffee-header"><h2>☕️ Coffee Shop</h2><p>Penjualan kopi dan snack</p></div>', unsafe_allow_html=True)
 
-    menu = get_coffee_menu()
-    if not menu:
-        st.info("Belum ada menu coffee. Silakan hubungi Admin untuk menambahkan menu.")
-        return
+    # Hitung jumlah transaksi untuk badge
+    df_sales_check = get_all_coffee_sales()
+    jumlah_history = len(df_sales_check)
+    
+    tab1, tab2, tab3 = st.tabs([
+        "☕️ Transaksi Pesanan",
+        f"📜 History Pesanan ({jumlah_history})",
+        "⚙️ Setting Menu Coffee"
+    ])
+    
+    with tab1:
+        st.subheader("☕️ Buat Pesanan Baru")
+        
+        menu = get_coffee_menu()
+        if not menu:
+            st.info("Belum ada menu coffee. Silakan hubungi Admin untuk menambahkan menu.")
+            return
 
-    st.subheader("Menu & Order")
-    cols = st.columns([3,1,1])
-
-    # Build order form
-    order = {}
-    for idx, (name, price) in enumerate(menu.items()):
-        c1, c2 = st.columns([3,1])
-        with c1:
-            st.write(f"**{name}** - Rp {price:,.0f}")
-        with c2:
-            qty = st.number_input(f"Qty {name}", min_value=0, value=0, key=f"coffee_qty_{idx}")
-        if qty and qty > 0:
-            order[name] = { 'price': price, 'qty': int(qty), 'subtotal': price * int(qty) }
-
-    if order:
-        st.markdown("---")
-        st.subheader("Ringkasan Order")
-        df_order = pd.DataFrame([{
-            'Item': k,
-            'Harga': v['price'],
-            'Qty': v['qty'],
-            'Subtotal': v['subtotal']
-        } for k, v in order.items()])
-        df_order['Harga'] = df_order['Harga'].apply(lambda x: f"Rp {x:,.0f}")
-        df_order['Subtotal'] = df_order['Subtotal'].apply(lambda x: f"Rp {x:,.0f}")
-        st.table(df_order)
-
-        total = sum(v['subtotal'] for v in order.values())
-        st.success(f"Total: Rp {total:,.0f}")
-
-        col1, col2 = st.columns([2,1])
+        # Input customer info
+        st.markdown("##### 👤 Data Customer")
+        col1, col2 = st.columns(2)
+        with col1:
+            nama_customer = st.text_input("Nama Customer", placeholder="Nama customer (opsional)", key="coffee_customer_name")
         with col2:
-            save_btn = st.button("💾 Simpan Penjualan Coffee", key="save_coffee_sale")
+            no_telp = st.text_input("No. WhatsApp", placeholder="08xxx atau 628xxx (opsional)", key="coffee_customer_wa")
+        
+        st.markdown("---")
+        st.markdown("##### 📋 Menu Coffee & Snack")
 
-        if save_btn:
-            now_wib = datetime.now(WIB)
-            trans = {
-                'items': [{'name': k, 'price': v['price'], 'qty': v['qty']} for k, v in order.items()],
-                'total': total,
-                'tanggal': now_wib.strftime('%d-%m-%Y'),
-                'waktu': now_wib.strftime('%H:%M:%S'),
-                'created_by': st.session_state.get('login_user', '')
-            }
-            success, msg = save_coffee_sale(trans)
-            if success:
-                st.success(msg)
-                add_audit('coffee_sale', f"Penjualan coffee total Rp {total:,.0f}")
-                # Reset qty fields by rerun
-                st.experimental_rerun()
+        # Build order form
+        order = {}
+        for idx, (name, price) in enumerate(menu.items()):
+            c1, c2 = st.columns([3,1])
+            with c1:
+                st.write(f"**{name}** - Rp {price:,.0f}")
+            with c2:
+                qty = st.number_input(f"Qty", min_value=0, value=0, key=f"coffee_qty_{idx}", label_visibility="collapsed")
+            if qty and qty > 0:
+                order[name] = { 'price': price, 'qty': int(qty), 'subtotal': price * int(qty) }
+
+        if order:
+            st.markdown("---")
+            st.subheader("🧾 Ringkasan Order")
+            df_order = pd.DataFrame([{
+                'Item': k,
+                'Harga': v['price'],
+                'Qty': v['qty'],
+                'Subtotal': v['subtotal']
+            } for k, v in order.items()])
+            df_order['Harga'] = df_order['Harga'].apply(lambda x: f"Rp {x:,.0f}")
+            df_order['Subtotal'] = df_order['Subtotal'].apply(lambda x: f"Rp {x:,.0f}")
+            st.table(df_order)
+
+            total = sum(v['subtotal'] for v in order.values())
+            st.success(f"💰 **Total: Rp {total:,.0f}**")
+
+            col1, col2, col3 = st.columns([2, 1, 2])
+            with col2:
+                save_btn = st.button("💾 Simpan Penjualan", type="primary", use_container_width=True, key="save_coffee_sale")
+
+            if save_btn:
+                now_wib = datetime.now(WIB)
+                trans = {
+                    'items': [{'name': k, 'price': v['price'], 'qty': v['qty']} for k, v in order.items()],
+                    'total': total,
+                    'tanggal': now_wib.strftime('%d-%m-%Y'),
+                    'waktu': now_wib.strftime('%H:%M:%S'),
+                    'nama_customer': nama_customer,
+                    'no_telp': no_telp,
+                    'created_by': st.session_state.get('login_user', '')
+                }
+                success, msg = save_coffee_sale(trans)
+                if success:
+                    st.success(msg)
+                    add_audit('coffee_sale', f"Penjualan coffee total Rp {total:,.0f}")
+                    
+                    # Generate WhatsApp invoice if phone number is provided
+                    if no_telp:
+                        toko_info = get_toko_info()
+                        invoice_text = generate_coffee_invoice(trans, toko_info)
+                        whatsapp_link = create_whatsapp_link(no_telp, invoice_text)
+                        
+                        st.markdown("---")
+                        st.markdown("### 📱 Invoice WhatsApp")
+                        st.markdown(f"**Customer:** {nama_customer if nama_customer else 'Walk-in Customer'}")
+                        st.link_button("💬 Kirim Invoice via WhatsApp", whatsapp_link, use_container_width=True)
+                        
+                        with st.expander("👁️ Preview Invoice"):
+                            st.text(invoice_text)
+                    else:
+                        st.rerun()
+                else:
+                    st.error(msg)
+        else:
+            st.info("📭 Belum ada item dipilih untuk dipesan. Silakan pilih menu dan masukkan jumlah.")
+    
+    with tab2:
+        st.subheader('📜 Riwayat Penjualan Coffee')
+        
+        df_sales = get_all_coffee_sales()
+        if df_sales.empty:
+            st.info('📭 Belum ada penjualan coffee tersimpan')
+        else:
+            # Filter pencarian
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                search_date = st.text_input("🔍 Cari Tanggal", placeholder="dd-mm-yyyy", key="search_coffee_date")
+            with col2:
+                search_kasir = st.text_input("🔍 Cari Kasir", key="search_coffee_kasir")
+            
+            # Apply filter
+            if search_date:
+                df_sales = df_sales[df_sales['tanggal'].str.contains(search_date, case=False, na=False)]
+            if search_kasir:
+                df_sales = df_sales[df_sales['created_by'].str.contains(search_kasir, case=False, na=False)]
+            
+            if not df_sales.empty:
+                st.success(f"📊 **{len(df_sales)} transaksi** ditemukan")
+                
+                # parse items for display
+                def items_str(js):
+                    try:
+                        arr = json.loads(js)
+                        return '\n'.join([f"{i['qty']}x {i['name']} (Rp {i['price']:,.0f})" for i in arr])
+                    except:
+                        return js
+
+                df_sales['Items Detail'] = df_sales['items'].apply(items_str)
+                df_disp = df_sales[['tanggal', 'waktu', 'Items Detail', 'total', 'created_by']].copy()
+                df_disp.columns = ['📅 Tanggal', '⏰ Waktu', '☕️ Items', '💰 Total', '👤 Kasir']
+                df_disp['💰 Total'] = df_disp['💰 Total'].apply(lambda x: f"Rp {x:,.0f}")
+                
+                st.dataframe(df_disp, use_container_width=True, hide_index=True)
+                
+                # Statistik ringkas
+                st.markdown("---")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    total_penjualan = df_sales['total'].sum()
+                    st.metric("💰 Total Penjualan", f"Rp {total_penjualan:,.0f}")
+                with col2:
+                    st.metric("📊 Jumlah Transaksi", len(df_sales))
+                with col3:
+                    avg_transaksi = total_penjualan / len(df_sales) if len(df_sales) > 0 else 0
+                    st.metric("📈 Rata-rata", f"Rp {avg_transaksi:,.0f}")
             else:
-                st.error(msg)
-    else:
-        st.info("Belum ada item dipilih untuk dipesan")
-
-    # History
-    st.markdown('---')
-    st.subheader('📜 Riwayat Penjualan Coffee')
-    df_sales = get_all_coffee_sales()
-    if df_sales.empty:
-        st.info('Belum ada penjualan coffee tersimpan')
-    else:
-        # parse items for display
-        def items_str(js):
-            try:
-                arr = json.loads(js)
-                return '\n'.join([f"{i['qty']}x {i['name']} (Rp {i['price']:,.0f})" for i in arr])
-            except:
-                return js
-
-        df_sales['Items Detail'] = df_sales['items'].apply(items_str)
-        df_disp = df_sales[['tanggal', 'waktu', 'Items Detail', 'total', 'created_by']].copy()
-        df_disp.columns = ['Tanggal', 'Waktu', 'Items', 'Total', 'Kasir']
-        df_disp['Total'] = df_disp['Total'].apply(lambda x: f"Rp {x:,.0f}")
-        st.dataframe(df_disp, use_container_width=True)
+                st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
+    
+    with tab3:
+        st.subheader("⚙️ Kelola Menu Coffee Shop")
+        
+        # Check role
+        if role not in ["Admin", "Supervisor"]:
+            st.warning("⚠️ Hanya Admin dan Supervisor yang dapat mengelola menu coffee")
+            return
+        
+        coffee_menu = get_coffee_menu()
+        
+        st.info("ℹ️ Tambah, edit, atau hapus menu coffee dan snack yang tersedia")
+        
+        # Tampilkan menu yang ada
+        st.markdown("##### ☕️ Menu Saat Ini:")
+        menu_updated = coffee_menu.copy()
+        
+        for idx, (nama, harga) in enumerate(coffee_menu.items()):
+            col1, col2, col3 = st.columns([3, 2, 1])
+            with col1:
+                new_nama = st.text_input("Nama Item", value=nama, key=f"coffee_menu_nama_{idx}", label_visibility="collapsed")
+            with col2:
+                new_harga = st.number_input("Harga", value=int(harga), min_value=0, step=1000, key=f"coffee_menu_harga_{idx}", label_visibility="collapsed")
+            with col3:
+                if st.button("🗑️", key=f"del_coffee_menu_{idx}", help="Hapus item ini"):
+                    del menu_updated[nama]
+                    success, msg = update_setting("coffee_menu", menu_updated)
+                    if success:
+                        st.success(f"✅ {nama} berhasil dihapus")
+                        add_audit("coffee_menu_delete", f"Hapus menu: {nama}")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+            
+            # Update jika berubah
+            if new_nama != nama or new_harga != harga:
+                if new_nama and new_harga > 0:
+                    if nama in menu_updated:
+                        del menu_updated[nama]
+                    menu_updated[new_nama] = new_harga
+        
+        st.markdown("---")
+        
+        # Tambah menu baru
+        st.markdown("##### ➕ Tambah Menu Baru:")
+        col1, col2, col3 = st.columns([3, 2, 1])
+        with col1:
+            nama_baru = st.text_input("Nama Item Baru", key="new_coffee_menu_nama", placeholder="Contoh: Green Tea Latte")
+        with col2:
+            harga_baru = st.number_input("Harga", value=20000, min_value=0, step=1000, key="new_coffee_menu_harga")
+        with col3:
+            if st.button("➕ Tambah", key="add_coffee_menu"):
+                if nama_baru and harga_baru > 0:
+                    if nama_baru in menu_updated:
+                        st.error(f"❌ Menu '{nama_baru}' sudah ada!")
+                    else:
+                        menu_updated[nama_baru] = harga_baru
+                        success, msg = update_setting("coffee_menu", menu_updated)
+                        if success:
+                            st.success(f"✅ Menu '{nama_baru}' berhasil ditambahkan")
+                            add_audit("coffee_menu_add", f"Tambah menu: {nama_baru} - Rp {harga_baru:,.0f}")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    st.error("❌ Mohon isi nama dan harga menu")
+        
+        st.markdown("---")
+        
+        # Simpan semua perubahan
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("💾 Simpan Semua Perubahan Menu", type="primary", use_container_width=True, key="save_all_coffee_menu"):
+                success, msg = update_setting("coffee_menu", menu_updated)
+                if success:
+                    st.success("✅ Semua perubahan menu coffee berhasil disimpan!")
+                    add_audit("coffee_menu_update", "Update menu coffee")
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 def customer_page(role):
     st.markdown("""
@@ -1521,47 +2281,72 @@ def laporan_page(role):
         box-shadow: 0 2px 10px rgba(0,0,0,0.08);
         margin-bottom: 2rem;
     }
-    .metric-card {
-        background: white;
+    .summary-box {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        color: white;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+    }
+    .summary-box h3 {
+        margin: 0 0 1.5rem 0;
+        font-size: 1.5rem;
+        font-weight: 800;
+    }
+    .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 1rem;
+    }
+    .summary-item {
+        background: rgba(255,255,255,0.15);
+        padding: 1rem;
         border-radius: 12px;
-        padding: 1.2rem;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-        border-left: 4px solid;
-        transition: transform 0.2s;
+        backdrop-filter: blur(10px);
     }
-    .metric-card:hover {
-        transform: translateY(-3px);
+    .summary-label {
+        font-size: 0.8rem;
+        opacity: 0.9;
+        margin-bottom: 0.5rem;
     }
-    .metric-card-1 { border-left-color: #43e97b; }
-    .metric-card-2 { border-left-color: #4facfe; }
-    .metric-card-3 { border-left-color: #f093fb; }
-    .report-box {
+    .summary-value {
+        font-size: 1.5rem;
+        font-weight: 900;
+    }
+    .business-section {
         background: white;
         padding: 1.5rem;
         border-radius: 15px;
         box-shadow: 0 2px 10px rgba(0,0,0,0.08);
         margin-bottom: 1.5rem;
     }
-    .report-title {
+    .section-title {
         color: #2d3436;
-        font-size: 1.3rem;
+        font-size: 1.2rem;
         font-weight: 700;
         margin-bottom: 1rem;
         padding-bottom: 0.8rem;
         border-bottom: 3px solid #f0f0f0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
     }
     </style>
     """, unsafe_allow_html=True)
     
     st.markdown('''
     <div class="laporan-header">
-        <h1>📊 Laporan Pendapatan</h1>
+        <h1>📊 Laporan Keuangan</h1>
+        <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">Laporan Terintegrasi: Car Wash & Coffee Shop</p>
     </div>
     ''', unsafe_allow_html=True)
     
+    # Load data
     df_trans = get_all_transactions()
+    df_coffee = get_all_coffee_sales()
     
-    if df_trans.empty:
+    if df_trans.empty and df_coffee.empty:
         st.info("📭 Belum ada data transaksi")
         return
     
@@ -1569,120 +2354,502 @@ def laporan_page(role):
     st.markdown('<div class="filter-section">', unsafe_allow_html=True)
     col1, col2, col3 = st.columns([1, 1, 2])
     
-    # Parse tanggal
+    # Parse tanggal untuk wash
     df_trans['tanggal_dt'] = pd.to_datetime(df_trans['tanggal'], format='%d-%m-%Y', errors='coerce')
     df_trans['bulan'] = df_trans['tanggal_dt'].dt.month
     df_trans['tahun'] = df_trans['tanggal_dt'].dt.year
-    df_trans['bulan_tahun'] = df_trans['tanggal_dt'].dt.strftime('%m-%Y')
+    
+    # Parse tanggal untuk coffee
+    df_coffee['tanggal_dt'] = pd.to_datetime(df_coffee['tanggal'], format='%d-%m-%Y', errors='coerce')
+    df_coffee['bulan'] = df_coffee['tanggal_dt'].dt.month
+    df_coffee['tahun'] = df_coffee['tanggal_dt'].dt.year
+    
+    # Get available years
+    years_trans = df_trans['tahun'].dropna().unique() if not df_trans.empty else []
+    years_coffee = df_coffee['tahun'].dropna().unique() if not df_coffee.empty else []
+    all_years = sorted(set(list(years_trans) + list(years_coffee)), reverse=True)
     
     with col1:
-        years = sorted(df_trans['tahun'].dropna().unique(), reverse=True)
-        selected_year = st.selectbox("📅 Tahun", options=years, key="lap_year")
+        selected_year = st.selectbox("📅 Tahun", options=all_years, key="lap_year")
     
     with col2:
-        months = ['All'] + [f"{i:02d}" for i in range(1, 13)]
         month_names = ['Semua', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
                       'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember']
-        selected_month = st.selectbox("📆 Bulan", options=range(len(months)), 
+        selected_month = st.selectbox("📆 Bulan", options=range(len(month_names)), 
                                      format_func=lambda x: month_names[x], key="lap_month")
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # Filter data
-    df_filtered = df_trans[df_trans['tahun'] == selected_year].copy()
+    # Filter data wash
+    df_wash_filtered = df_trans[df_trans['tahun'] == selected_year].copy() if not df_trans.empty else pd.DataFrame()
+    if selected_month != 0 and not df_wash_filtered.empty:
+        df_wash_filtered = df_wash_filtered[df_wash_filtered['bulan'] == selected_month]
     
-    if selected_month != 0:  # Not "All"
-        df_filtered = df_filtered[df_filtered['bulan'] == selected_month]
+    # Filter data coffee
+    df_coffee_filtered = df_coffee[df_coffee['tahun'] == selected_year].copy() if not df_coffee.empty else pd.DataFrame()
+    if selected_month != 0 and not df_coffee_filtered.empty:
+        df_coffee_filtered = df_coffee_filtered[df_coffee_filtered['bulan'] == selected_month]
     
-    if df_filtered.empty:
-        st.warning("⚠️ Tidak ada data untuk periode ini")
-        return
-    
-    # Statistik
-    total_pendapatan = df_filtered['harga'].sum()
-    total_transaksi = len(df_filtered)
-    avg_transaksi = total_pendapatan / total_transaksi if total_transaksi > 0 else 0
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("💰 Total Pendapatan", f"Rp {total_pendapatan:,.0f}")
-    with col2:
-        st.metric("🚗 Total Transaksi", total_transaksi)
-    with col3:
-        st.metric("📊 Rata-rata per Transaksi", f"Rp {avg_transaksi:,.0f}")
-    
-    st.markdown("---")
-    
-    # Tabel per paket
-    st.subheader("📦 Pendapatan per Paket Cuci")
-    
-    paket_summary = df_filtered.groupby('paket_cuci').agg(
-        Jumlah=('id', 'count'),
-        Total_Pendapatan=('harga', 'sum'),
-        Rata_rata=('harga', 'mean')
-    ).reset_index()
-    paket_summary.columns = ['Paket Cuci', 'Jumlah', 'Total Pendapatan', 'Rata-rata']
-    paket_summary = paket_summary.sort_values('Total Pendapatan', ascending=False)
-    
-    # Format currency
-    paket_summary['Total Pendapatan'] = paket_summary['Total Pendapatan'].apply(lambda x: f"Rp {x:,.0f}")
-    paket_summary['Rata-rata'] = paket_summary['Rata-rata'].apply(lambda x: f"Rp {x:,.0f}")
-    
-    st.dataframe(paket_summary, use_container_width=True, hide_index=True)
-    
-    # Grafik
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("📊 Jumlah Transaksi per Paket")
-        paket_count = df_filtered.groupby('paket_cuci').size().reset_index(name='count')
-        paket_count = paket_count.sort_values('count', ascending=False)
-        chart = alt.Chart(paket_count).mark_bar(cornerRadiusEnd=8).encode(
-            x=alt.X('count:Q', title='Jumlah'),
-            y=alt.Y('paket_cuci:N', sort='-x', title=''),
-            color=alt.Color('count:Q', scale=alt.Scale(scheme='purples'), legend=None),
-            tooltip=[
-                alt.Tooltip('paket_cuci:N', title='Paket'),
-                alt.Tooltip('count:Q', title='Jumlah')
-            ]
-        ).properties(height=280)
-        st.altair_chart(chart, use_container_width=True)
-    
-    with col2:
-        st.subheader("💰 Pendapatan per Paket")
-        paket_income = df_filtered.groupby('paket_cuci')['harga'].sum().reset_index()
-        paket_income.columns = ['paket', 'total']
-        pie = alt.Chart(paket_income).mark_arc(innerRadius=60).encode(
-            theta='total:Q',
-            color=alt.Color('paket:N', legend=alt.Legend(orient='bottom', title=None)),
-            tooltip=[
-                alt.Tooltip('paket:N', title='Paket'),
-                alt.Tooltip('total:Q', format=',.0f', title='Pendapatan (Rp)')
-            ]
-        ).properties(height=280)
-        st.altair_chart(pie, use_container_width=True)
-    
-    # Tren harian
-    if selected_month != 0:
-        st.subheader("📈 Tren Pendapatan Harian")
-        daily_income = df_filtered.groupby('tanggal').agg(
-            total=('harga', 'sum'),
-            count=('id', 'count')
-        ).reset_index().sort_values('tanggal')
+    # Control Panel untuk Adjustment
+    with st.expander("⚙️ Control Panel - Adjustment Laporan Keuangan", expanded=False):
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); padding: 1rem; border-radius: 10px; margin-bottom: 1rem;">
+            <h4 style="margin: 0 0 0.5rem 0; color: #2d3436;">🎛️ Adjustment Pendapatan</h4>
+            <p style="margin: 0; font-size: 0.85rem; color: #636e72;">Gunakan slider untuk menyesuaikan persentase pendapatan yang ditampilkan dalam laporan</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # Convert tanggal untuk chart
-        daily_income['tanggal_dt'] = pd.to_datetime(daily_income['tanggal'], format='%d-%m-%Y')
+        col1, col2, col3 = st.columns(3)
         
-        line = alt.Chart(daily_income).mark_line(point=True, strokeWidth=3, color='#fa709a').encode(
-            x=alt.X('tanggal_dt:T', title='Tanggal', axis=alt.Axis(format='%d-%m')),
-            y=alt.Y('total:Q', title='Pendapatan (Rp)'),
-            tooltip=[
-                alt.Tooltip('tanggal:N', title='Tanggal'),
-                alt.Tooltip('total:Q', format=',.0f', title='Rp'),
-                alt.Tooltip('count:Q', title='Transaksi')
-            ]
-        ).properties(height=250)
+        with col1:
+            st.markdown("**🚗 Adjustment Car Wash**")
+            wash_percentage = st.slider(
+                "Persentase Car Wash",
+                min_value=0,
+                max_value=200,
+                value=100,
+                step=5,
+                key="wash_adj",
+                help="100% = Pendapatan aktual, 50% = Setengah dari aktual, 150% = 1.5x dari aktual",
+                label_visibility="collapsed"
+            )
+            st.info(f"📊 Adjustment: **{wash_percentage}%** dari aktual")
         
-        st.altair_chart(line, use_container_width=True)
+        with col2:
+            st.markdown("**☕ Adjustment Coffee Shop**")
+            coffee_percentage = st.slider(
+                "Persentase Coffee Shop",
+                min_value=0,
+                max_value=200,
+                value=100,
+                step=5,
+                key="coffee_adj",
+                help="100% = Pendapatan aktual, 50% = Setengah dari aktual, 150% = 1.5x dari aktual",
+                label_visibility="collapsed"
+            )
+            st.info(f"📊 Adjustment: **{coffee_percentage}%** dari aktual")
+        
+        with col3:
+            st.markdown("**🎯 Quick Presets**")
+            if st.button("🔄 Reset ke 100%", use_container_width=True):
+                st.session_state.wash_adj = 100
+                st.session_state.coffee_adj = 100
+                st.rerun()
+            if st.button("📉 Konservatif (75%)", use_container_width=True):
+                st.session_state.wash_adj = 75
+                st.session_state.coffee_adj = 75
+                st.rerun()
+            if st.button("📈 Optimis (125%)", use_container_width=True):
+                st.session_state.wash_adj = 125
+                st.session_state.coffee_adj = 125
+                st.rerun()
+        
+        # Show adjustment info
+        if wash_percentage != 100 or coffee_percentage != 100:
+            st.markdown("---")
+            st.warning(f"⚠️ **Mode Adjustment Aktif** - Pendapatan ditampilkan dengan adjustment: Car Wash {wash_percentage}%, Coffee {coffee_percentage}%")
+    
+    # Apply adjustment ke data
+    adjustment_wash = wash_percentage / 100 if 'wash_percentage' in locals() else 1.0
+    adjustment_coffee = coffee_percentage / 100 if 'coffee_percentage' in locals() else 1.0
+    
+    # Hitung statistik dengan adjustment
+    total_pendapatan_wash_actual = df_wash_filtered['harga'].sum() if not df_wash_filtered.empty else 0
+    total_pendapatan_wash = total_pendapatan_wash_actual * adjustment_wash
+    total_transaksi_wash = len(df_wash_filtered)
+    
+    total_pendapatan_coffee_actual = df_coffee_filtered['total'].sum() if not df_coffee_filtered.empty else 0
+    total_pendapatan_coffee = total_pendapatan_coffee_actual * adjustment_coffee
+    total_transaksi_coffee = len(df_coffee_filtered)
+    
+    total_pendapatan_gabungan = total_pendapatan_wash + total_pendapatan_coffee
+    total_transaksi_gabungan = total_transaksi_wash + total_transaksi_coffee
+    
+    avg_wash = total_pendapatan_wash / total_transaksi_wash if total_transaksi_wash > 0 else 0
+    avg_coffee = total_pendapatan_coffee / total_transaksi_coffee if total_transaksi_coffee > 0 else 0
+    
+    # Summary Box
+    adjustment_note = ""
+    if adjustment_wash != 1.0 or adjustment_coffee != 1.0:
+        adjustment_note = f" <span style='font-size: 0.85rem; opacity: 0.9;'>(Adjusted: Wash {int(adjustment_wash*100)}%, Coffee {int(adjustment_coffee*100)}%)</span>"
+    
+    st.markdown(f'''
+    <div class="summary-box">
+        <h3>💼 Ringkasan Keuangan Periode {month_names[selected_month]} {selected_year}{adjustment_note}</h3>
+        <div class="summary-grid">
+            <div class="summary-item">
+                <div class="summary-label">💰 Total Pendapatan</div>
+                <div class="summary-value">Rp {total_pendapatan_gabungan:,.0f}</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">🚗 Pendapatan Wash</div>
+                <div class="summary-value">Rp {total_pendapatan_wash:,.0f}</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">☕ Pendapatan Coffee</div>
+                <div class="summary-value">Rp {total_pendapatan_coffee:,.0f}</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">📊 Total Transaksi</div>
+                <div class="summary-value">{total_transaksi_gabungan}</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">📈 Avg. Wash</div>
+                <div class="summary-value">Rp {avg_wash:,.0f}</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-label">📈 Avg. Coffee</div>
+                <div class="summary-value">Rp {avg_coffee:,.0f}</div>
+            </div>
+        </div>
+    </div>
+    ''', unsafe_allow_html=True)
+    
+    # Tabs untuk detail laporan
+    tab1, tab2, tab3, tab4 = st.tabs(["🚗 Detail Cuci Mobil", "☕ Detail Coffee Shop", "📊 Perbandingan", "📈 Trend Analysis"])
+    
+    with tab1:
+        st.markdown('<div class="business-section">', unsafe_allow_html=True)
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    padding: 0.8rem 1rem; border-radius: 8px; margin-bottom: 1.5rem;">
+            <h3 style="color: white; margin: 0; font-size: 1.1rem; font-weight: 600;">
+                🚗 Detail Cuci Mobil
+            </h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if not df_wash_filtered.empty:
+            # Apply adjustment ke data wash
+            df_wash_adjusted = df_wash_filtered.copy()
+            df_wash_adjusted['harga'] = df_wash_adjusted['harga'] * adjustment_wash
+            
+            # Tabel per paket
+            st.markdown("**📦 Pendapatan per Paket Cuci**")
+            paket_summary = df_wash_adjusted.groupby('paket_cuci').agg(
+                Jumlah=('id', 'count'),
+                Total_Pendapatan=('harga', 'sum'),
+                Rata_rata=('harga', 'mean'),
+                Min=('harga', 'min'),
+                Max=('harga', 'max')
+            ).reset_index()
+            paket_summary.columns = ['Paket Cuci', 'Jumlah', 'Total Pendapatan', 'Rata-rata', 'Min', 'Max']
+            paket_summary = paket_summary.sort_values('Total Pendapatan', ascending=False)
+            
+            # Add percentage
+            paket_summary['% Kontribusi'] = (paket_summary['Total Pendapatan'] / paket_summary['Total Pendapatan'].sum() * 100).round(1)
+            
+            # Format tampilan
+            df_display = paket_summary.copy()
+            df_display['Total Pendapatan'] = df_display['Total Pendapatan'].apply(lambda x: f"Rp {x:,.0f}")
+            df_display['Rata-rata'] = df_display['Rata-rata'].apply(lambda x: f"Rp {x:,.0f}")
+            df_display['Min'] = df_display['Min'].apply(lambda x: f"Rp {x:,.0f}")
+            df_display['Max'] = df_display['Max'].apply(lambda x: f"Rp {x:,.0f}")
+            df_display['% Kontribusi'] = df_display['% Kontribusi'].apply(lambda x: f"{x}%")
+            
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            
+            st.divider()
+            # Grafik
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**📊 Volume Transaksi**")
+                paket_count = df_wash_filtered.groupby('paket_cuci').size().reset_index(name='count')
+                chart = alt.Chart(paket_count).mark_bar(cornerRadiusEnd=8).encode(
+                    x=alt.X('count:Q', title='Jumlah'),
+                    y=alt.Y('paket_cuci:N', sort='-x', title=''),
+                    color=alt.Color('count:Q', scale=alt.Scale(scheme='purples'), legend=None),
+                    tooltip=['paket_cuci:N', 'count:Q']
+                ).properties(height=280)
+                st.altair_chart(chart, use_container_width=True)
+            
+            with col2:
+                st.markdown("**💰 Distribusi Pendapatan**")
+                pie = alt.Chart(paket_summary).mark_arc(innerRadius=50).encode(
+                    theta='Total Pendapatan:Q',
+                    color=alt.Color('Paket Cuci:N', scale=alt.Scale(scheme='purples'), legend=alt.Legend(orient='bottom')),
+                    tooltip=['Paket Cuci:N', alt.Tooltip('Total Pendapatan:Q', format=',.0f')]
+                ).properties(height=280)
+                st.altair_chart(pie, use_container_width=True)
+            
+            st.divider()
+            # Status transaksi
+            st.markdown("**✅ Status Transaksi**")
+            status_summary = df_wash_filtered.groupby('status').agg(
+                Jumlah=('id', 'count'),
+                Total=('harga', 'sum')
+            ).reset_index()
+            col1, col2, col3 = st.columns(3)
+            for idx, row in status_summary.iterrows():
+                with [col1, col2, col3][idx % 3]:
+                    st.metric(f"{row['status']}", f"{row['Jumlah']} transaksi", f"Rp {row['Total']:,.0f}")
+        else:
+            st.info("📭 Tidak ada data cuci mobil untuk periode ini")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with tab2:
+        st.markdown('<div class="business-section">', unsafe_allow_html=True)
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #f6d365 0%, #fda085 100%); 
+                    padding: 0.8rem 1rem; border-radius: 8px; margin-bottom: 1.5rem;">
+            <h3 style="color: white; margin: 0; font-size: 1.1rem; font-weight: 600;">
+                ☕ Detail Coffee Shop
+            </h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if not df_coffee_filtered.empty:
+            # Statistics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("💰 Total Penjualan", f"Rp {total_pendapatan_coffee:,.0f}",
+                         delta=f"{int(adjustment_coffee*100)}% adjustment" if adjustment_coffee != 1.0 else None)
+            with col2:
+                st.metric("🛒 Total Transaksi", total_transaksi_coffee)
+            with col3:
+                st.metric("📊 Rata-rata/Transaksi", f"Rp {avg_coffee:,.0f}")
+            
+            # Analisis item terjual
+            st.markdown("**☕ Item Terlaris**")
+            all_items = []
+            for items_str in df_coffee_filtered['items']:
+                try:
+                    items = json.loads(items_str)
+                    for item in items:
+                        all_items.append(item)
+                except:
+                    pass
+            
+            if all_items:
+                items_df = pd.DataFrame(all_items)
+                
+                # Deteksi nama kolom dengan helper function
+                def get_column(df, possible_names):
+                    for name in possible_names:
+                        if name in df.columns:
+                            return name
+                    return None
+                
+                name_col = get_column(items_df, ['nama', 'name', 'item'])
+                qty_col = get_column(items_df, ['qty', 'quantity', 'jumlah'])
+                total_col = get_column(items_df, ['subtotal', 'total', 'harga'])
+                
+                if not name_col:
+                    st.warning("⚠️ Struktur data items tidak sesuai. Kolom yang tersedia: " + ", ".join(items_df.columns.tolist()))
+                elif not qty_col or not total_col:
+                    st.warning("⚠️ Data items tidak memiliki kolom qty atau subtotal yang diperlukan")
+                else:
+                    # Apply adjustment to items
+                    items_df[total_col] = items_df[total_col] * adjustment_coffee
+                    
+                    items_summary = items_df.groupby(name_col).agg(
+                        Jumlah=(qty_col, 'sum'),
+                        Total_Pendapatan=(total_col, 'sum')
+                    ).reset_index()
+                    items_summary.columns = ['Item', 'Qty Terjual', 'Total Pendapatan']
+                    items_summary = items_summary.sort_values('Total Pendapatan', ascending=False)
+                    
+                    # Add percentage
+                    items_summary['% Kontribusi'] = (items_summary['Total Pendapatan'] / items_summary['Total Pendapatan'].sum() * 100).round(1)
+                    
+                    # Format
+                    df_display = items_summary.copy()
+                    df_display['Total Pendapatan'] = df_display['Total Pendapatan'].apply(lambda x: f"Rp {x:,.0f}")
+                    df_display['% Kontribusi'] = df_display['% Kontribusi'].apply(lambda x: f"{x}%")
+                    
+                    st.dataframe(df_display, use_container_width=True, hide_index=True)
+                    
+                    st.divider()
+                    # Grafik
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**📊 Qty Terjual (Top 10)**")
+                        top_items = items_summary.head(10)
+                        chart = alt.Chart(top_items).mark_bar(cornerRadiusEnd=8).encode(
+                            x=alt.X('Qty Terjual:Q', title='Quantity'),
+                            y=alt.Y('Item:N', sort='-x', title=''),
+                            color=alt.Color('Qty Terjual:Q', scale=alt.Scale(scheme='oranges'), legend=None),
+                            tooltip=['Item:N', 'Qty Terjual:Q']
+                        ).properties(height=320)
+                        st.altair_chart(chart, use_container_width=True)
+                    
+                    with col2:
+                        st.markdown("**💰 Pendapatan per Item**")
+                        pie = alt.Chart(top_items).mark_arc(innerRadius=50).encode(
+                            theta='Total Pendapatan:Q',
+                            color=alt.Color('Item:N', scale=alt.Scale(scheme='oranges'), legend=alt.Legend(orient='bottom')),
+                            tooltip=['Item:N', alt.Tooltip('Total Pendapatan:Q', format=',.0f')]
+                        ).properties(height=320)
+                        st.altair_chart(pie, use_container_width=True)
+            else:
+                st.info("📭 Tidak ada data item coffee untuk periode ini")
+        else:
+            st.info("📭 Tidak ada data coffee shop untuk periode ini")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with tab3:
+        st.markdown('<div class="business-section">', unsafe_allow_html=True)
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); 
+                    padding: 0.8rem 1rem; border-radius: 8px; margin-bottom: 1.5rem;">
+            <h3 style="color: white; margin: 0; font-size: 1.1rem; font-weight: 600;">
+                📊 Perbandingan Bisnis
+            </h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Show adjustment info if active
+        if adjustment_wash != 1.0 or adjustment_coffee != 1.0:
+            st.info(f"ℹ️ Adjustment: Wash **{int(adjustment_wash*100)}%**, Coffee **{int(adjustment_coffee*100)}%**")
+        
+        # Comparison metrics
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**🚗 Car Wash**")
+            st.metric("💰 Total Pendapatan", f"Rp {total_pendapatan_wash:,.0f}")
+            if adjustment_wash != 1.0:
+                st.caption(f"Aktual: Rp {total_pendapatan_wash_actual:,.0f}")
+            st.metric("🛒 Jumlah Transaksi", total_transaksi_wash)
+            st.metric("📊 Rata-rata/Transaksi", f"Rp {avg_wash:,.0f}")
+            wash_pct = (total_pendapatan_wash / total_pendapatan_gabungan * 100) if total_pendapatan_gabungan > 0 else 0
+            st.metric("📈 Kontribusi", f"{wash_pct:.1f}%")
+        
+        with col2:
+            st.markdown("**☕ Coffee Shop**")
+            st.metric("💰 Total Pendapatan", f"Rp {total_pendapatan_coffee:,.0f}")
+            if adjustment_coffee != 1.0:
+                st.caption(f"Aktual: Rp {total_pendapatan_coffee_actual:,.0f}")
+            st.metric("🛒 Jumlah Transaksi", total_transaksi_coffee)
+            st.metric("📊 Rata-rata/Transaksi", f"Rp {avg_coffee:,.0f}")
+            coffee_pct = (total_pendapatan_coffee / total_pendapatan_gabungan * 100) if total_pendapatan_gabungan > 0 else 0
+            st.metric("📈 Kontribusi", f"{coffee_pct:.1f}%")
+        
+        st.divider()
+        # Comparison charts
+        st.markdown("**📊 Visualisasi Perbandingan**")
+        
+        comparison_data = pd.DataFrame({
+            'Bisnis': ['Car Wash', 'Coffee Shop'],
+            'Pendapatan': [total_pendapatan_wash, total_pendapatan_coffee],
+            'Transaksi': [total_transaksi_wash, total_transaksi_coffee]
+        })
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            chart = alt.Chart(comparison_data).mark_bar(cornerRadiusEnd=10, size=60).encode(
+                x=alt.X('Bisnis:N', title='', axis=alt.Axis(labelFontSize=12)),
+                y=alt.Y('Pendapatan:Q', title='Pendapatan (Rp)'),
+                color=alt.Color('Bisnis:N', scale=alt.Scale(domain=['Car Wash', 'Coffee Shop'], 
+                                                            range=['#667eea', '#f6d365']), legend=None),
+                tooltip=['Bisnis:N', alt.Tooltip('Pendapatan:Q', format=',.0f', title='Rp')]
+            ).properties(height=320)
+            st.altair_chart(chart, use_container_width=True)
+        
+        with col2:
+            chart = alt.Chart(comparison_data).mark_bar(cornerRadiusEnd=10, size=60).encode(
+                x=alt.X('Bisnis:N', title='', axis=alt.Axis(labelFontSize=12)),
+                y=alt.Y('Transaksi:Q', title='Jumlah Transaksi'),
+                color=alt.Color('Bisnis:N', scale=alt.Scale(domain=['Car Wash', 'Coffee Shop'], 
+                                                            range=['#667eea', '#f6d365']), legend=None),
+                tooltip=['Bisnis:N', 'Transaksi:Q']
+            ).properties(height=320)
+            st.altair_chart(chart, use_container_width=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with tab4:
+        st.markdown('<div class="business-section">', unsafe_allow_html=True)
+        st.markdown("""
+        <div style="background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); 
+                    padding: 0.8rem 1rem; border-radius: 8px; margin-bottom: 1.5rem;">
+            <h3 style="color: white; margin: 0; font-size: 1.1rem; font-weight: 600;">
+                📈 Trend Analysis
+            </h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if selected_month != 0:
+            # Tren harian
+            st.markdown("**📅 Tren Pendapatan Harian**")
+            
+            # Prepare daily data for wash dengan adjustment
+            df_wash_daily = df_wash_filtered.copy() if not df_wash_filtered.empty else pd.DataFrame()
+            if not df_wash_daily.empty:
+                df_wash_daily['harga'] = df_wash_daily['harga'] * adjustment_wash
+            
+            daily_wash = df_wash_daily.groupby('tanggal')['harga'].sum().reset_index() if not df_wash_daily.empty else pd.DataFrame()
+            if not daily_wash.empty:
+                daily_wash.columns = ['tanggal', 'wash']
+                daily_wash['tanggal_dt'] = pd.to_datetime(daily_wash['tanggal'], format='%d-%m-%Y')
+            
+            # Prepare daily data for coffee dengan adjustment
+            df_coffee_daily = df_coffee_filtered.copy() if not df_coffee_filtered.empty else pd.DataFrame()
+            if not df_coffee_daily.empty:
+                df_coffee_daily['total'] = df_coffee_daily['total'] * adjustment_coffee
+            
+            daily_coffee = df_coffee_daily.groupby('tanggal')['total'].sum().reset_index() if not df_coffee_daily.empty else pd.DataFrame()
+            if not daily_coffee.empty:
+                daily_coffee.columns = ['tanggal', 'coffee']
+                daily_coffee['tanggal_dt'] = pd.to_datetime(daily_coffee['tanggal'], format='%d-%m-%Y')
+            
+            # Merge data
+            if not daily_wash.empty or not daily_coffee.empty:
+                if not daily_wash.empty and not daily_coffee.empty:
+                    daily_combined = pd.merge(daily_wash, daily_coffee, on='tanggal_dt', how='outer', suffixes=('', '_coffee'))
+                    daily_combined['wash'] = daily_combined['wash'].fillna(0)
+                    daily_combined['coffee'] = daily_combined['coffee'].fillna(0)
+                    daily_combined['total'] = daily_combined['wash'] + daily_combined['coffee']
+                elif not daily_wash.empty:
+                    daily_combined = daily_wash.copy()
+                    daily_combined['coffee'] = 0
+                    daily_combined['total'] = daily_combined['wash']
+                else:
+                    daily_combined = daily_coffee.copy()
+                    daily_combined['wash'] = 0
+                    daily_combined['total'] = daily_combined['coffee']
+                
+                daily_combined = daily_combined.sort_values('tanggal_dt')
+                
+                # Create line chart
+                daily_melted = daily_combined.melt(id_vars=['tanggal_dt'], 
+                                                   value_vars=['wash', 'coffee', 'total'],
+                                                   var_name='Bisnis', value_name='Pendapatan')
+                daily_melted['Bisnis'] = daily_melted['Bisnis'].map({
+                    'wash': 'Car Wash',
+                    'coffee': 'Coffee Shop',
+                    'total': 'Total'
+                })
+                
+                chart = alt.Chart(daily_melted).mark_line(point=alt.OverlayMarkDef(size=60, filled=True), strokeWidth=3).encode(
+                    x=alt.X('tanggal_dt:T', title='Tanggal', axis=alt.Axis(format='%d-%m', labelAngle=-45)),
+                    y=alt.Y('Pendapatan:Q', title='Pendapatan (Rp)'),
+                    color=alt.Color('Bisnis:N', scale=alt.Scale(domain=['Car Wash', 'Coffee Shop', 'Total'],
+                                                                range=['#667eea', '#f6d365', '#43e97b']),
+                                  legend=alt.Legend(orient='top', title=None)),
+                    tooltip=[
+                        alt.Tooltip('tanggal_dt:T', title='Tanggal', format='%d-%m-%Y'),
+                        'Bisnis:N',
+                        alt.Tooltip('Pendapatan:Q', format=',.0f', title='Rp')
+                    ]
+                ).properties(height=400)
+                
+                st.altair_chart(chart, use_container_width=True)
+                
+                st.divider()
+                # Summary table
+                st.markdown("**📋 Detail Tabel Harian**")
+                daily_display = daily_combined[['tanggal_dt', 'wash', 'coffee', 'total']].copy()
+                daily_display.columns = ['Tanggal', 'Car Wash', 'Coffee Shop', 'Total']
+                daily_display['Tanggal'] = daily_display['Tanggal'].dt.strftime('%d-%m-%Y')
+                daily_display['Car Wash'] = daily_display['Car Wash'].apply(lambda x: f"Rp {x:,.0f}")
+                daily_display['Coffee Shop'] = daily_display['Coffee Shop'].apply(lambda x: f"Rp {x:,.0f}")
+                daily_display['Total'] = daily_display['Total'].apply(lambda x: f"Rp {x:,.0f}")
+                
+                st.dataframe(daily_display, use_container_width=True, hide_index=True)
+        else:
+            st.info("ℹ️ Pilih bulan spesifik untuk melihat trend analysis harian")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
 
 def setting_toko_page(role):
     st.markdown("""
@@ -1717,197 +2884,47 @@ def setting_toko_page(role):
         st.warning("⚠️ Hanya Admin dan Supervisor yang dapat mengakses halaman ini")
         return
     
-    tab1, tab2, tab3, tab4 = st.tabs(["📦 Paket Cuci", "✅ Checklist Datang", "✓ Checklist Selesai", "🏪 Info Toko"])
+    st.subheader("🏪 Informasi Toko")
     
-    with tab1:
-        st.subheader("📦 Kelola Paket Cucian")
+    toko_info = get_setting("toko_info")
+    if not toko_info:
+        toko_info = {
+            "nama": "TIME AUTOCARE",
+            "tagline": "Detailing & Ceramic Coating",
+            "alamat": "Jl. Contoh No. 123",
+            "telp": "08123456789",
+            "email": "info@timeautocare.com"
+        }
+    
+    with st.form("toko_info_form"):
+        st.info("ℹ️ Informasi ini akan muncul di laporan dan dokumen")
         
-        # Load paket cucian
-        paket_cucian = get_paket_cucian()
-        
-        st.info("ℹ️ Tambah, edit, atau hapus paket cucian yang tersedia")
-        
-        # Tampilkan paket yang ada
-        st.markdown("##### Paket Cucian Saat Ini:")
-        for idx, (nama, harga) in enumerate(paket_cucian.items()):
-            col1, col2, col3 = st.columns([3, 2, 1])
-            with col1:
-                new_nama = st.text_input("Nama Paket", value=nama, key=f"paket_nama_{idx}", label_visibility="collapsed")
-            with col2:
-                new_harga = st.number_input("Harga", value=harga, min_value=0, step=5000, key=f"paket_harga_{idx}", label_visibility="collapsed")
-            with col3:
-                if st.button("🗑️", key=f"del_paket_{idx}", help="Hapus paket"):
-                    del paket_cucian[nama]
-                    update_setting("paket_cucian", paket_cucian)
-                    add_audit("setting_toko", f"Hapus paket: {nama}")
-                    st.rerun()
-            
-            # Update jika berubah
-            if new_nama != nama or new_harga != harga:
-                if new_nama and new_nama != nama:
-                    paket_cucian[new_nama] = paket_cucian.pop(nama)
-                paket_cucian[new_nama if new_nama else nama] = new_harga
-        
-        st.markdown("---")
-        
-        # Tambah paket baru
-        st.markdown("##### Tambah Paket Baru:")
-        col1, col2, col3 = st.columns([3, 2, 1])
+        nama_toko = st.text_input("🏪 Nama Toko", value=toko_info.get("nama", ""))
+        tagline_toko = st.text_input("✨ Tagline", value=toko_info.get("tagline", ""), placeholder="Contoh: Detailing & Ceramic Coating")
+        alamat_toko = st.text_area("📍 Alamat", value=toko_info.get("alamat", ""))
+        col1, col2 = st.columns(2)
         with col1:
-            nama_baru = st.text_input("Nama Paket Baru", key="new_paket_nama", placeholder="Contoh: Cuci Express")
+            telp_toko = st.text_input("📞 Telepon", value=toko_info.get("telp", ""))
         with col2:
-            harga_baru = st.number_input("Harga", value=50000, min_value=0, step=5000, key="new_paket_harga")
-        with col3:
-            if st.button("➕ Tambah", key="add_paket"):
-                if nama_baru:
-                    paket_cucian[nama_baru] = harga_baru
-                    update_setting("paket_cucian", paket_cucian)
-                    add_audit("setting_toko", f"Tambah paket: {nama_baru} - Rp {harga_baru:,.0f}")
-                    st.success(f"✅ Paket '{nama_baru}' berhasil ditambahkan")
-                    st.rerun()
+            email_toko = st.text_input("📧 Email", value=toko_info.get("email", ""))
         
-        if st.button("💾 Simpan Semua Perubahan Paket", type="primary", use_container_width=True):
-            success, msg = update_setting("paket_cucian", paket_cucian)
-            if success:
-                add_audit("setting_toko", "Update paket cucian")
-                st.success("✅ Paket cucian berhasil diupdate")
-                st.rerun()
-            else:
-                st.error(f"❌ {msg}")
-    
-    with tab2:
-        st.subheader("✅ Kelola Checklist Mobil Datang")
+        submitted = st.form_submit_button("💾 Simpan Info Toko", type="primary", use_container_width=True)
         
-        checklist_datang = get_checklist_datang()
-        
-        st.info("ℹ️ Checklist untuk memeriksa kondisi mobil saat pertama datang")
-        
-        # Tampilkan checklist yang ada
-        new_checklist = []
-        for idx, item in enumerate(checklist_datang):
-            col1, col2 = st.columns([5, 1])
-            with col1:
-                new_item = st.text_input(f"Item {idx+1}", value=item, key=f"check_datang_{idx}", label_visibility="collapsed")
-                if new_item:
-                    new_checklist.append(new_item)
-            with col2:
-                if st.button("🗑️", key=f"del_check_datang_{idx}", help="Hapus item"):
-                    checklist_datang.pop(idx)
-                    update_setting("checklist_datang", checklist_datang)
-                    add_audit("setting_toko", f"Hapus checklist datang: {item}")
-                    st.rerun()
-        
-        st.markdown("---")
-        
-        # Tambah item baru
-        st.markdown("##### Tambah Item Baru:")
-        col1, col2 = st.columns([5, 1])
-        with col1:
-            item_baru = st.text_input("Item Checklist Baru", key="new_check_datang", placeholder="Contoh: Kondisi interior bersih")
-        with col2:
-            if st.button("➕", key="add_check_datang"):
-                if item_baru:
-                    checklist_datang.append(item_baru)
-                    update_setting("checklist_datang", checklist_datang)
-                    add_audit("setting_toko", f"Tambah checklist datang: {item_baru}")
-                    st.success(f"✅ Item berhasil ditambahkan")
-                    st.rerun()
-        
-        if st.button("💾 Simpan Perubahan Checklist", type="primary", use_container_width=True, key="save_checklist_datang"):
-            success, msg = update_setting("checklist_datang", new_checklist if new_checklist else checklist_datang)
-            if success:
-                add_audit("setting_toko", "Update checklist datang")
-                st.success("✅ Checklist berhasil diupdate")
-                st.rerun()
-            else:
-                st.error(f"❌ {msg}")
-    
-    with tab3:
-        st.subheader("✓ Kelola Checklist QC Selesai")
-        
-        checklist_selesai = get_checklist_selesai()
-        
-        st.info("ℹ️ Checklist untuk quality control setelah selesai cuci")
-        
-        # Tampilkan checklist yang ada
-        new_checklist_selesai = []
-        for idx, item in enumerate(checklist_selesai):
-            col1, col2 = st.columns([5, 1])
-            with col1:
-                new_item = st.text_input(f"Item {idx+1}", value=item, key=f"check_selesai_{idx}", label_visibility="collapsed")
-                if new_item:
-                    new_checklist_selesai.append(new_item)
-            with col2:
-                if st.button("🗑️", key=f"del_check_selesai_{idx}", help="Hapus item"):
-                    checklist_selesai.pop(idx)
-                    update_setting("checklist_selesai", checklist_selesai)
-                    add_audit("setting_toko", f"Hapus checklist selesai: {item}")
-                    st.rerun()
-        
-        st.markdown("---")
-        
-        # Tambah item baru
-        st.markdown("##### Tambah Item Baru:")
-        col1, col2 = st.columns([5, 1])
-        with col1:
-            item_baru_selesai = st.text_input("Item Checklist Baru", key="new_check_selesai", placeholder="Contoh: Velg mengkilap")
-        with col2:
-            if st.button("➕", key="add_check_selesai"):
-                if item_baru_selesai:
-                    checklist_selesai.append(item_baru_selesai)
-                    update_setting("checklist_selesai", checklist_selesai)
-                    add_audit("setting_toko", f"Tambah checklist selesai: {item_baru_selesai}")
-                    st.success(f"✅ Item berhasil ditambahkan")
-                    st.rerun()
-        
-        if st.button("💾 Simpan Perubahan Checklist", type="primary", use_container_width=True, key="save_checklist_selesai"):
-            success, msg = update_setting("checklist_selesai", new_checklist_selesai if new_checklist_selesai else checklist_selesai)
-            if success:
-                add_audit("setting_toko", "Update checklist selesai")
-                st.success("✅ Checklist berhasil diupdate")
-                st.rerun()
-            else:
-                st.error(f"❌ {msg}")
-    
-    with tab4:
-        st.subheader("🏪 Informasi Toko")
-        
-        toko_info = get_setting("toko_info")
-        if not toko_info:
-            toko_info = {
-                "nama": "CUCI MOBIL BERSIH",
-                "alamat": "Jl. Contoh No. 123",
-                "telp": "08123456789",
-                "email": "info@cucimobil.com"
+        if submitted:
+            new_toko_info = {
+                "nama": nama_toko,
+                "tagline": tagline_toko,
+                "alamat": alamat_toko,
+                "telp": telp_toko,
+                "email": email_toko
             }
-        
-        with st.form("toko_info_form"):
-            st.info("ℹ️ Informasi ini akan muncul di laporan dan dokumen")
-            
-            nama_toko = st.text_input("🏪 Nama Toko", value=toko_info.get("nama", ""))
-            alamat_toko = st.text_area("📍 Alamat", value=toko_info.get("alamat", ""))
-            col1, col2 = st.columns(2)
-            with col1:
-                telp_toko = st.text_input("📞 Telepon", value=toko_info.get("telp", ""))
-            with col2:
-                email_toko = st.text_input("📧 Email", value=toko_info.get("email", ""))
-            
-            submitted = st.form_submit_button("💾 Simpan Info Toko", type="primary", use_container_width=True)
-            
-            if submitted:
-                new_toko_info = {
-                    "nama": nama_toko,
-                    "alamat": alamat_toko,
-                    "telp": telp_toko,
-                    "email": email_toko
-                }
-                success, msg = update_setting("toko_info", new_toko_info)
-                if success:
-                    add_audit("setting_toko", "Update info toko")
-                    st.success("✅ Info toko berhasil diupdate")
-                    st.rerun()
-                else:
-                    st.error(f"❌ {msg}")
+            success, msg = update_setting("toko_info", new_toko_info)
+            if success:
+                add_audit("setting_toko", "Update info toko")
+                st.success("✅ Info toko berhasil diupdate")
+                st.rerun()
+            else:
+                st.error(f"❌ {msg}")
 
 def audit_trail_page():
     st.header("Audit Trail")
@@ -2022,7 +3039,7 @@ def user_setting_page():
                 st.info("ℹ️ Tidak ada perubahan.")
 
 def main():
-    st.set_page_config(page_title="Cuci Mobil Apps", layout="wide", page_icon="🚗")
+    st.set_page_config(page_title="TIME AUTOCARE - Detailing & Ceramic Coating", layout="wide", page_icon="🚗")
     
     # Initialize database di awal sebelum login
     init_db()
@@ -2121,7 +3138,8 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    st.sidebar.markdown('<p class="menu-title">🚗 MENU CUCI MOBIL</p>', unsafe_allow_html=True)
+    st.sidebar.markdown('<p class="menu-title">🚗 TIME AUTOCARE</p>', unsafe_allow_html=True)
+    
     
     # Menu items
     menu_items = [
@@ -2150,8 +3168,6 @@ def main():
         st.rerun()
     st.sidebar.markdown('</div>', unsafe_allow_html=True)
     
-    # Page title
-    st.title("🚗 Sistem Manajemen Cuci Mobil")
     
     menu = st.session_state["menu"]
 
