@@ -52,7 +52,7 @@ PAKET_CUCIAN = {
     "Exterior Only": 40000
 }
 
-# --- Coffee Shop Default Menu ---
+# --- Kasir - Menu Coffee & Snack ---
 DEFAULT_COFFEE_MENU = {
     "Espresso": 15000,
     "Americano": 18000,
@@ -193,6 +193,30 @@ def init_db():
         # Column doesn't exist, add it
         c.execute("ALTER TABLE coffee_sales ADD COLUMN nama_customer TEXT")
         c.execute("ALTER TABLE coffee_sales ADD COLUMN no_telp TEXT")
+    
+    # Tabel untuk transaksi Kasir (gabungan cuci mobil + coffee/snack)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS kasir_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nopol TEXT NOT NULL,
+            nama_customer TEXT NOT NULL,
+            no_telp TEXT,
+            tanggal TEXT NOT NULL,
+            waktu TEXT NOT NULL,
+            wash_trans_id INTEGER,
+            paket_cuci TEXT,
+            harga_cuci INTEGER DEFAULT 0,
+            coffee_items TEXT,
+            harga_coffee INTEGER DEFAULT 0,
+            total_bayar INTEGER NOT NULL,
+            status_bayar TEXT DEFAULT 'Lunas',
+            metode_bayar TEXT,
+            created_by TEXT,
+            catatan TEXT,
+            FOREIGN KEY (nopol) REFERENCES customers(nopol),
+            FOREIGN KEY (wash_trans_id) REFERENCES wash_transactions(id)
+        )
+    ''')
     
     conn.commit()
     conn.close()
@@ -439,6 +463,139 @@ def get_all_coffee_sales():
     df = pd.read_sql("SELECT * FROM coffee_sales ORDER BY tanggal DESC, waktu DESC", conn)
     conn.close()
     return df
+
+# --- Kasir Functions ---
+def get_pending_wash_transactions():
+    """Ambil transaksi cuci mobil yang belum dibayar (status 'Dalam Proses' atau 'Selesai')"""
+    conn = sqlite3.connect(DB_NAME)
+    # Cek transaksi yang belum ada di kasir_transactions
+    query = """
+        SELECT wt.* FROM wash_transactions wt
+        LEFT JOIN kasir_transactions kt ON wt.id = kt.wash_trans_id
+        WHERE kt.id IS NULL
+        ORDER BY wt.tanggal DESC, wt.waktu_masuk DESC
+    """
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+def save_kasir_transaction(data):
+    """Simpan transaksi kasir (bisa gabungan cuci mobil + coffee atau hanya salah satu)"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        c.execute("""
+            INSERT INTO kasir_transactions 
+            (nopol, nama_customer, no_telp, tanggal, waktu, wash_trans_id, paket_cuci, harga_cuci,
+             coffee_items, harga_coffee, total_bayar, status_bayar, metode_bayar, created_by, catatan)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data.get('nopol', '').upper(),
+            data.get('nama_customer', ''),
+            data.get('no_telp', ''),
+            data.get('tanggal', ''),
+            data.get('waktu', ''),
+            data.get('wash_trans_id'),
+            data.get('paket_cuci', ''),
+            int(data.get('harga_cuci', 0)),
+            data.get('coffee_items', ''),
+            int(data.get('harga_coffee', 0)),
+            int(data.get('total_bayar', 0)),
+            data.get('status_bayar', 'Lunas'),
+            data.get('metode_bayar', ''),
+            data.get('created_by', ''),
+            data.get('catatan', '')
+        ))
+        conn.commit()
+        return True, "Transaksi kasir berhasil disimpan"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def get_all_kasir_transactions():
+    """Ambil semua transaksi kasir"""
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql("SELECT * FROM kasir_transactions ORDER BY tanggal DESC, waktu DESC", conn)
+    conn.close()
+    return df
+
+def generate_kasir_invoice(trans_data, toko_info):
+    """Generate invoice kasir untuk WhatsApp (cuci mobil + coffee)"""
+    # Parse coffee items jika ada
+    coffee_detail = ""
+    if trans_data.get('coffee_items'):
+        try:
+            items_list = json.loads(trans_data['coffee_items']) if isinstance(trans_data['coffee_items'], str) else trans_data['coffee_items']
+            coffee_detail = '\n'.join([f"  {i['qty']}x {i['name']} @ Rp {i['price']:,.0f}" for i in items_list])
+        except:
+            coffee_detail = "N/A"
+    
+    # Build message
+    message = f"""*{'='*35}*
+   *INVOICE KASIR*
+*{'='*35}*
+
+*{toko_info.get('nama', 'TIME AUTOCARE')}*
+_{toko_info.get('tagline', 'Detailing & Ceramic Coating')}_
+Alamat: {toko_info.get('alamat', '')}
+Telp: {toko_info.get('telp', '')}
+
+*{'='*35}*
+   *DETAIL TRANSAKSI*
+*{'='*35}*
+
+Customer: *{trans_data.get('nama_customer', '-')}*
+No. Polisi: *{trans_data.get('nopol', '-')}*
+Tanggal: {trans_data['tanggal']}
+Waktu: {trans_data['waktu']}
+Kasir: {trans_data.get('created_by', '-')}
+
+*{'='*35}*"""
+
+    # Tambahkan detail cuci mobil jika ada
+    if trans_data.get('paket_cuci') and trans_data.get('harga_cuci', 0) > 0:
+        message += f"""
+   *CUCI MOBIL*
+*{'='*35}*
+
+Paket: {trans_data.get('paket_cuci', '-')}
+Harga: Rp {trans_data.get('harga_cuci', 0):,.0f}
+
+*{'='*35}*"""
+
+    # Tambahkan detail coffee jika ada
+    if coffee_detail:
+        message += f"""
+   *COFFEE SHOP*
+*{'='*35}*
+
+{coffee_detail}
+
+Subtotal Coffee: Rp {trans_data.get('harga_coffee', 0):,.0f}
+
+*{'='*35}*"""
+
+    # Total pembayaran
+    message += f"""
+
+*TOTAL PEMBAYARAN:*
+*Rp {trans_data.get('total_bayar', 0):,.0f}*
+
+Metode: {trans_data.get('metode_bayar', 'Tunai')}
+Status: {trans_data.get('status_bayar', 'Lunas')}
+
+*{'='*35}*
+
+_Terima kasih atas kunjungan Anda!_
+_Kepuasan Anda adalah prioritas kami_
+
+*Sampai jumpa lagi!* 
+
+_Drive clean, stay fresh..._
+"""
+    
+    return message
 
 def generate_coffee_invoice(sale_data, toko_info):
     """Generate invoice coffee shop untuk WhatsApp"""
@@ -789,6 +946,7 @@ def dashboard_page(role):
     df_trans = get_all_transactions()
     df_cust = get_all_customers()
     df_coffee = get_all_coffee_sales()
+    df_kasir = get_all_kasir_transactions()
     
     # Filter tanggal - default hari ini
     today = datetime.now(WIB).date()
@@ -816,23 +974,37 @@ def dashboard_page(role):
             (pd.to_datetime(df_coffee['tanggal'], format='%d-%m-%Y', errors='coerce') >= pd.to_datetime(start_date, format='%d-%m-%Y')) &
             (pd.to_datetime(df_coffee['tanggal'], format='%d-%m-%Y', errors='coerce') <= pd.to_datetime(end_date, format='%d-%m-%Y'))
         ]
+        
+        # Filter kasir transactions by date range
+        df_kasir_filtered = df_kasir[
+            (pd.to_datetime(df_kasir['tanggal'], format='%d-%m-%Y', errors='coerce') >= pd.to_datetime(start_date, format='%d-%m-%Y')) &
+            (pd.to_datetime(df_kasir['tanggal'], format='%d-%m-%Y', errors='coerce') <= pd.to_datetime(end_date, format='%d-%m-%Y'))
+        ]
     else:
         df_filtered = df_trans
         df_coffee_filtered = df_coffee
+        df_kasir_filtered = df_kasir
     
-    # Hitung statistik cuci mobil
+    # Hitung statistik cuci mobil (yang belum masuk kasir)
     total_transaksi_wash = len(df_filtered)
     total_pendapatan_wash = df_filtered['harga'].sum() if not df_filtered.empty else 0
     transaksi_selesai = len(df_filtered[df_filtered['status'] == 'Selesai'])
     transaksi_proses = len(df_filtered[df_filtered['status'] == 'Dalam Proses'])
     
-    # Hitung statistik coffee shop
+    # Hitung statistik coffee shop (yang tidak melalui kasir gabungan)
     total_transaksi_coffee = len(df_coffee_filtered)
     total_pendapatan_coffee = df_coffee_filtered['total'].sum() if not df_coffee_filtered.empty else 0
     
-    # Total keseluruhan
-    total_pendapatan_gabungan = total_pendapatan_wash + total_pendapatan_coffee
-    total_transaksi_gabungan = total_transaksi_wash + total_transaksi_coffee
+    # Hitung statistik kasir (transaksi gabungan)
+    total_transaksi_kasir = len(df_kasir_filtered)
+    total_pendapatan_kasir = df_kasir_filtered['total_bayar'].sum() if not df_kasir_filtered.empty else 0
+    pendapatan_kasir_wash = df_kasir_filtered['harga_cuci'].sum() if not df_kasir_filtered.empty else 0
+    pendapatan_kasir_coffee = df_kasir_filtered['harga_coffee'].sum() if not df_kasir_filtered.empty else 0
+    
+    # Total keseluruhan (hitung semua pendapatan)
+    # Note: cuci mobil yang sudah masuk kasir tidak dihitung lagi di total_pendapatan_wash
+    total_pendapatan_gabungan = total_pendapatan_kasir + total_pendapatan_coffee
+    total_transaksi_gabungan = total_transaksi_kasir + total_transaksi_coffee
     total_customer = len(df_cust)
     
     # Cards
@@ -879,9 +1051,9 @@ def dashboard_page(role):
     
     # Business Summary
     if total_transaksi_gabungan > 0:
-        avg_wash = total_pendapatan_wash / total_transaksi_wash if total_transaksi_wash > 0 else 0
+        avg_kasir = total_pendapatan_kasir / total_transaksi_kasir if total_transaksi_kasir > 0 else 0
         avg_coffee = total_pendapatan_coffee / total_transaksi_coffee if total_transaksi_coffee > 0 else 0
-        wash_percentage = (total_pendapatan_wash / total_pendapatan_gabungan * 100) if total_pendapatan_gabungan > 0 else 0
+        kasir_percentage = (total_pendapatan_kasir / total_pendapatan_gabungan * 100) if total_pendapatan_gabungan > 0 else 0
         coffee_percentage = (total_pendapatan_coffee / total_pendapatan_gabungan * 100) if total_pendapatan_gabungan > 0 else 0
         
         st.markdown(f'''
@@ -889,16 +1061,16 @@ def dashboard_page(role):
             <h3>📈 Ringkasan Bisnis</h3>
             <div class="summary-grid">
                 <div class="summary-item">
-                    <div class="summary-item-label">💵 Rata-rata per Cuci</div>
-                    <div class="summary-item-value">Rp {avg_wash:,.0f}</div>
+                    <div class="summary-item-label">💵 Rata-rata Transaksi Kasir</div>
+                    <div class="summary-item-value">Rp {avg_kasir:,.0f}</div>
                 </div>
                 <div class="summary-item">
-                    <div class="summary-item-label">☕ Rata-rata Coffee</div>
+                    <div class="summary-item-label">☕ Rata-rata Coffee Only</div>
                     <div class="summary-item-value">Rp {avg_coffee:,.0f}</div>
                 </div>
                 <div class="summary-item">
-                    <div class="summary-item-label">🚗 Kontribusi Wash</div>
-                    <div class="summary-item-value">{wash_percentage:.1f}%</div>
+                    <div class="summary-item-label">💳 Kontribusi Kasir</div>
+                    <div class="summary-item-value">{kasir_percentage:.1f}%</div>
                 </div>
                 <div class="summary-item">
                     <div class="summary-item-label">☕ Kontribusi Coffee</div>
@@ -1891,28 +2063,237 @@ Terima kasih atas kepercayaan Anda! 🙏
                     st.error(msg)
 
 
-def coffee_shop_page(role):
+def kasir_page(role):
     st.markdown("""
     <style>
-    .coffee-header { background: linear-gradient(135deg, #f6d365 0%, #fda085 100%); padding: 1.2rem; border-radius: 12px; color: #2d3436; margin-bottom: 1rem; }
-    .coffee-card { background: white; padding: 1rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+    .kasir-header { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); padding: 1.2rem; border-radius: 12px; color: white; margin-bottom: 1rem; box-shadow: 0 4px 15px rgba(17, 153, 142, 0.3); }
+    .kasir-card { background: white; padding: 1rem; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); }
+    .pending-wash { background: #fff3cd; padding: 1rem; border-left: 4px solid #ffc107; border-radius: 8px; margin-bottom: 1rem; }
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown('<div class="coffee-header"><h2>☕️ Coffee Shop</h2><p>Penjualan kopi dan snack</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="kasir-header"><h2>💰 KASIR</h2><p>Pusat Transaksi - Cuci Mobil & Coffee Shop</p></div>', unsafe_allow_html=True)
 
     # Hitung jumlah transaksi untuk badge
     df_sales_check = get_all_coffee_sales()
-    jumlah_history = len(df_sales_check)
+    df_kasir_check = get_all_kasir_transactions()
+    jumlah_history_coffee = len(df_sales_check)
+    jumlah_history_kasir = len(df_kasir_check)
     
-    tab1, tab2, tab3 = st.tabs([
-        "☕️ Transaksi Pesanan",
-        f"📜 History Pesanan ({jumlah_history})",
-        "⚙️ Setting Menu Coffee"
+    # Ambil transaksi cuci mobil yang pending pembayaran (status 'Dalam Proses' atau 'Selesai')
+    df_pending = get_pending_wash_transactions()
+    jumlah_pending = len(df_pending)
+    
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        f"💰 Transaksi Kasir ({jumlah_pending} Pending)",
+        "☕️ Coffee Only",
+        f"📜 History Kasir ({jumlah_history_kasir})",
+        f"📜 History Coffee ({jumlah_history_coffee})",
+        "⚙️ Setting Menu"
     ])
     
     with tab1:
-        st.subheader("☕️ Buat Pesanan Baru")
+        st.subheader("💰 Transaksi Kasir - Pembayaran")
+        st.info("💡 **Alur:** SPV input data cuci mobil → Data masuk ke Kasir → Customer bayar di sini")
+        
+        # Tampilkan daftar mobil yang pending pembayaran
+        if not df_pending.empty:
+            st.markdown("---")
+            st.markdown("### 🚗 Mobil Pending Pembayaran")
+            st.warning(f"⚠️ Ada **{len(df_pending)}** transaksi cuci mobil yang menunggu pembayaran")
+            
+            for idx, row in df_pending.iterrows():
+                with st.expander(f"🚗 {row['nopol']} - {row['nama_customer']} | {row['paket_cuci']} | Rp {row['harga']:,.0f}", expanded=False):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**Nopol:** {row['nopol']}")
+                        st.write(f"**Nama:** {row['nama_customer']}")
+                        st.write(f"**Paket:** {row['paket_cuci']}")
+                        st.write(f"**Tanggal:** {row['tanggal']}")
+                    with col2:
+                        st.write(f"**Waktu Masuk:** {row['waktu_masuk']}")
+                        st.write(f"**Status:** {row['status']}")
+                        st.write(f"**Harga Cuci:** Rp {row['harga']:,.0f}")
+                        st.write(f"**SPV:** {row.get('created_by', '-')}")
+                    
+                    if st.button(f"✅ Proses Pembayaran", key=f"pay_{row['id']}", type="primary"):
+                        st.session_state[f'selected_wash_{row["id"]}'] = True
+                        st.rerun()
+        
+        st.markdown("---")
+        
+        # Form pembayaran
+        st.markdown("### 💳 Form Pembayaran")
+        
+        # Pilih transaksi cuci mobil (jika ada)
+        wash_trans_selected = None
+        if not df_pending.empty:
+            st.markdown("##### 🚗 Transaksi Cuci Mobil")
+            
+            # Cek apakah ada yang dipilih dari tombol di atas
+            selected_id = None
+            for key in st.session_state.keys():
+                if key.startswith('selected_wash_') and st.session_state[key]:
+                    selected_id = int(key.replace('selected_wash_', ''))
+                    break
+            
+            wash_options = ["Tidak ada"] + [f"{row['nopol']} - {row['nama_customer']} - {row['paket_cuci']} (Rp {row['harga']:,.0f})" for _, row in df_pending.iterrows()]
+            
+            # Set default index jika ada yang dipilih
+            default_idx = 0
+            if selected_id:
+                for i, (_, row) in enumerate(df_pending.iterrows(), 1):
+                    if row['id'] == selected_id:
+                        default_idx = i
+                        break
+            
+            wash_choice = st.selectbox("Pilih Transaksi Cuci Mobil", wash_options, index=default_idx, key="wash_select")
+            
+            if wash_choice != "Tidak ada":
+                wash_idx = wash_options.index(wash_choice) - 1
+                wash_trans_selected = df_pending.iloc[wash_idx]
+        
+        # Data customer
+        st.markdown("##### 👤 Data Customer")
+        col1, col2, col3 = st.columns(3)
+        
+        # Auto-fill dari wash transaction jika dipilih
+        default_nopol = wash_trans_selected['nopol'] if wash_trans_selected is not None else ""
+        default_nama = wash_trans_selected['nama_customer'] if wash_trans_selected is not None else ""
+        
+        # Get customer info if nopol is available
+        customer_telp = ""
+        if default_nopol:
+            cust_data = get_customer_by_nopol(default_nopol)
+            if cust_data:
+                customer_telp = cust_data.get('no_telp', '')
+        
+        with col1:
+            nopol_input = st.text_input("No. Polisi", value=default_nopol, key="kasir_nopol", placeholder="B1234XYZ")
+        with col2:
+            nama_input = st.text_input("Nama Customer", value=default_nama, key="kasir_nama", placeholder="Nama customer")
+        with col3:
+            telp_input = st.text_input("No. WhatsApp", value=customer_telp, key="kasir_telp", placeholder="08xxx atau 628xxx")
+        
+        # Coffee/Snack order
+        st.markdown("---")
+        st.markdown("##### ☕️ Tambah Coffee/Snack (Opsional)")
+        
+        menu = get_coffee_menu()
+        coffee_order = {}
+        
+        if menu:
+            for idx, (name, price) in enumerate(menu.items()):
+                c1, c2 = st.columns([3,1])
+                with c1:
+                    st.write(f"**{name}** - Rp {price:,.0f}")
+                with c2:
+                    qty = st.number_input(f"Qty", min_value=0, value=0, key=f"kasir_coffee_qty_{idx}", label_visibility="collapsed")
+                if qty and qty > 0:
+                    coffee_order[name] = { 'price': price, 'qty': int(qty), 'subtotal': price * int(qty) }
+        
+        # Ringkasan pembayaran
+        st.markdown("---")
+        st.markdown("### 🧾 Ringkasan Pembayaran")
+        
+        harga_cuci = int(wash_trans_selected['harga']) if wash_trans_selected is not None else 0
+        harga_coffee = sum(v['subtotal'] for v in coffee_order.values()) if coffee_order else 0
+        total_bayar = harga_cuci + harga_coffee
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if wash_trans_selected is not None:
+                st.metric("🚗 Biaya Cuci Mobil", f"Rp {harga_cuci:,.0f}")
+            if coffee_order:
+                st.metric("☕️ Biaya Coffee/Snack", f"Rp {harga_coffee:,.0f}")
+        with col2:
+            st.metric("💰 TOTAL PEMBAYARAN", f"Rp {total_bayar:,.0f}")
+        
+        # Detail coffee order jika ada
+        if coffee_order:
+            with st.expander("📋 Detail Pesanan Coffee/Snack"):
+                df_coffee = pd.DataFrame([{
+                    'Item': k,
+                    'Harga': f"Rp {v['price']:,.0f}",
+                    'Qty': v['qty'],
+                    'Subtotal': f"Rp {v['subtotal']:,.0f}"
+                } for k, v in coffee_order.items()])
+                st.table(df_coffee)
+        
+        # Metode pembayaran dan catatan
+        col1, col2 = st.columns(2)
+        with col1:
+            metode_bayar = st.selectbox("Metode Pembayaran", ["Tunai", "Transfer", "QRIS", "Kartu Debit/Kredit"], key="metode_bayar")
+        with col2:
+            status_bayar = st.selectbox("Status Pembayaran", ["Lunas", "DP", "Belum Bayar"], key="status_bayar")
+        
+        catatan_kasir = st.text_area("Catatan (Opsional)", key="catatan_kasir", placeholder="Catatan tambahan...")
+        
+        # Tombol simpan transaksi
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            save_kasir_btn = st.button("💾 SIMPAN & PROSES PEMBAYARAN", type="primary", use_container_width=True, key="save_kasir_trans")
+        
+        if save_kasir_btn:
+            # Validasi
+            if not nopol_input or not nama_input:
+                st.error("❌ Nopol dan Nama Customer harus diisi!")
+            elif total_bayar <= 0:
+                st.error("❌ Minimal harus ada transaksi cuci mobil atau coffee!")
+            else:
+                now_wib = datetime.now(WIB)
+                
+                # Siapkan data transaksi kasir
+                kasir_data = {
+                    'nopol': nopol_input,
+                    'nama_customer': nama_input,
+                    'no_telp': telp_input,
+                    'tanggal': now_wib.strftime('%d-%m-%Y'),
+                    'waktu': now_wib.strftime('%H:%M:%S'),
+                    'wash_trans_id': int(wash_trans_selected['id']) if wash_trans_selected is not None else None,
+                    'paket_cuci': wash_trans_selected['paket_cuci'] if wash_trans_selected is not None else '',
+                    'harga_cuci': harga_cuci,
+                    'coffee_items': json.dumps([{'name': k, 'price': v['price'], 'qty': v['qty']} for k, v in coffee_order.items()], ensure_ascii=False) if coffee_order else '',
+                    'harga_coffee': harga_coffee,
+                    'total_bayar': total_bayar,
+                    'status_bayar': status_bayar,
+                    'metode_bayar': metode_bayar,
+                    'created_by': st.session_state.get('login_user', ''),
+                    'catatan': catatan_kasir
+                }
+                
+                success, msg = save_kasir_transaction(kasir_data)
+                
+                if success:
+                    st.success("✅ " + msg)
+                    add_audit('kasir_transaction', f"Transaksi kasir {nopol_input} - Total: Rp {total_bayar:,.0f}")
+                    
+                    # Generate WhatsApp invoice if phone number is provided
+                    if telp_input:
+                        toko_info = get_toko_info()
+                        invoice_text = generate_kasir_invoice(kasir_data, toko_info)
+                        whatsapp_link = create_whatsapp_link(telp_input, invoice_text)
+                        
+                        st.markdown("---")
+                        st.markdown("### 📱 Invoice WhatsApp")
+                        st.success(f"✅ Transaksi berhasil! Kirim invoice ke **{nama_input}**")
+                        st.link_button("💬 Kirim Invoice via WhatsApp", whatsapp_link, use_container_width=True)
+                        
+                        with st.expander("👁️ Preview Invoice"):
+                            st.text(invoice_text)
+                        
+                        # Clear selected state
+                        for key in list(st.session_state.keys()):
+                            if key.startswith('selected_wash_'):
+                                del st.session_state[key]
+                    else:
+                        st.rerun()
+                else:
+                    st.error("❌ " + msg)
+    
+    with tab2:
+        st.subheader('☕️ Penjualan Coffee Only')
+        st.info("💡 Untuk penjualan coffee/snack tanpa transaksi cuci mobil")
         
         menu = get_coffee_menu()
         if not menu:
@@ -1920,12 +2301,12 @@ def coffee_shop_page(role):
             return
 
         # Input customer info
-        st.markdown("##### 👤 Data Customer")
+        st.markdown("##### 👤 Data Customer (Opsional)")
         col1, col2 = st.columns(2)
         with col1:
-            nama_customer = st.text_input("Nama Customer", placeholder="Nama customer (opsional)", key="coffee_customer_name")
+            nama_customer = st.text_input("Nama Customer", placeholder="Nama customer (opsional)", key="coffee_only_customer_name")
         with col2:
-            no_telp = st.text_input("No. WhatsApp", placeholder="08xxx atau 628xxx (opsional)", key="coffee_customer_wa")
+            no_telp = st.text_input("No. WhatsApp", placeholder="08xxx atau 628xxx (opsional)", key="coffee_only_customer_wa")
         
         st.markdown("---")
         st.markdown("##### 📋 Menu Coffee & Snack")
@@ -1937,7 +2318,7 @@ def coffee_shop_page(role):
             with c1:
                 st.write(f"**{name}** - Rp {price:,.0f}")
             with c2:
-                qty = st.number_input(f"Qty", min_value=0, value=0, key=f"coffee_qty_{idx}", label_visibility="collapsed")
+                qty = st.number_input(f"Qty", min_value=0, value=0, key=f"coffee_only_qty_{idx}", label_visibility="collapsed")
             if qty and qty > 0:
                 order[name] = { 'price': price, 'qty': int(qty), 'subtotal': price * int(qty) }
 
@@ -1959,7 +2340,7 @@ def coffee_shop_page(role):
 
             col1, col2, col3 = st.columns([2, 1, 2])
             with col2:
-                save_btn = st.button("💾 Simpan Penjualan", type="primary", use_container_width=True, key="save_coffee_sale")
+                save_btn = st.button("💾 Simpan Penjualan", type="primary", use_container_width=True, key="save_coffee_only_sale")
 
             if save_btn:
                 now_wib = datetime.now(WIB)
@@ -1997,8 +2378,93 @@ def coffee_shop_page(role):
         else:
             st.info("📭 Belum ada item dipilih untuk dipesan. Silakan pilih menu dan masukkan jumlah.")
     
-    with tab2:
-        st.subheader('📜 Riwayat Penjualan Coffee')
+    with tab3:
+        st.subheader('📜 History Transaksi Kasir')
+        st.info("💡 Riwayat transaksi gabungan (cuci mobil + coffee) yang diproses di kasir")
+        
+        df_kasir = get_all_kasir_transactions()
+        if df_kasir.empty:
+            st.info('📭 Belum ada transaksi kasir tersimpan')
+        else:
+            # Filter pencarian
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                search_date_kasir = st.text_input("🔍 Cari Tanggal", placeholder="dd-mm-yyyy", key="search_kasir_date")
+            with col2:
+                search_nopol_kasir = st.text_input("🔍 Cari Nopol", key="search_kasir_nopol")
+            
+            # Apply filter
+            if search_date_kasir:
+                df_kasir = df_kasir[df_kasir['tanggal'].str.contains(search_date_kasir, case=False, na=False)]
+            if search_nopol_kasir:
+                df_kasir = df_kasir[df_kasir['nopol'].str.contains(search_nopol_kasir, case=False, na=False)]
+            
+            if not df_kasir.empty:
+                st.success(f"📊 **{len(df_kasir)} transaksi** ditemukan")
+                
+                # Display detailed
+                for idx, row in df_kasir.iterrows():
+                    with st.expander(f"💳 {row['tanggal']} | {row['nopol']} - {row['nama_customer']} | Total: Rp {row['total_bayar']:,.0f}"):
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.write("**Data Customer:**")
+                            st.write(f"Nopol: {row['nopol']}")
+                            st.write(f"Nama: {row['nama_customer']}")
+                            st.write(f"Telp: {row.get('no_telp', '-')}")
+                        with col2:
+                            st.write("**Detail Transaksi:**")
+                            st.write(f"Tanggal: {row['tanggal']}")
+                            st.write(f"Waktu: {row['waktu']}")
+                            st.write(f"Kasir: {row.get('created_by', '-')}")
+                        with col3:
+                            st.write("**Pembayaran:**")
+                            st.write(f"Metode: {row.get('metode_bayar', '-')}")
+                            st.write(f"Status: {row.get('status_bayar', '-')}")
+                        
+                        st.markdown("---")
+                        
+                        # Detail biaya
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            if row.get('paket_cuci') and row.get('harga_cuci', 0) > 0:
+                                st.metric("🚗 Cuci Mobil", f"Rp {row['harga_cuci']:,.0f}")
+                                st.caption(f"Paket: {row['paket_cuci']}")
+                        with col2:
+                            if row.get('coffee_items') and row.get('harga_coffee', 0) > 0:
+                                st.metric("☕️ Coffee/Snack", f"Rp {row['harga_coffee']:,.0f}")
+                                try:
+                                    items = json.loads(row['coffee_items'])
+                                    items_text = ", ".join([f"{i['qty']}x {i['name']}" for i in items])
+                                    st.caption(items_text)
+                                except:
+                                    pass
+                        with col3:
+                            st.metric("💰 TOTAL", f"Rp {row['total_bayar']:,.0f}")
+                        
+                        if row.get('catatan'):
+                            st.info(f"📝 Catatan: {row['catatan']}")
+                
+                # Statistik ringkas
+                st.markdown("---")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    total_kasir = df_kasir['total_bayar'].sum()
+                    st.metric("💰 Total Penjualan", f"Rp {total_kasir:,.0f}")
+                with col2:
+                    st.metric("📊 Jumlah Transaksi", len(df_kasir))
+                with col3:
+                    avg_kasir = total_kasir / len(df_kasir) if len(df_kasir) > 0 else 0
+                    st.metric("📈 Rata-rata", f"Rp {avg_kasir:,.0f}")
+                with col4:
+                    total_cuci = df_kasir['harga_cuci'].sum()
+                    total_coffee = df_kasir['harga_coffee'].sum()
+                    st.metric("🚗 Total Cuci", f"Rp {total_cuci:,.0f}")
+            else:
+                st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
+    
+    with tab4:
+        st.subheader('📜 History Penjualan Coffee Only')
+        st.info("💡 Riwayat penjualan coffee/snack tanpa transaksi cuci mobil")
         
         df_sales = get_all_coffee_sales()
         if df_sales.empty:
@@ -2049,7 +2515,7 @@ def coffee_shop_page(role):
             else:
                 st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
     
-    with tab3:
+    with tab5:
         st.subheader("⚙️ Kelola Menu Coffee Shop")
         
         # Check role
@@ -3145,7 +3611,7 @@ def main():
     menu_items = [
         ("Dashboard", "📊"),
         ("Cuci Mobil", "🚗"),
-        ("Coffee Shop", "☕️"),
+        ("Kasir", "💰"),
         ("Customer", "👥"),
         ("Laporan", "📊"),
         ("Setting Toko", "⚙️"),
@@ -3176,8 +3642,8 @@ def main():
         dashboard_page(role)
     elif menu == "Cuci Mobil":
         transaksi_page(role)
-    elif menu == "Coffee Shop":
-        coffee_shop_page(role)
+    elif menu == "Kasir":
+        kasir_page(role)
     elif menu == "Customer":
         customer_page(role)
     elif menu == "Laporan":
