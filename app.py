@@ -7,6 +7,8 @@ import altair as alt
 import pytz
 import json
 import urllib.parse
+import secrets
+import hashlib
 
 # Timezone GMT+7 (WIB)
 WIB = pytz.timezone('Asia/Jakarta')
@@ -218,8 +220,87 @@ def init_db():
         )
     ''')
     
+    # Migration: Add secret_code column to existing kasir_transactions table if it doesn't exist
+    try:
+        c.execute("SELECT secret_code FROM kasir_transactions LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column doesn't exist, add it
+        c.execute("ALTER TABLE kasir_transactions ADD COLUMN secret_code TEXT")
+        conn.commit()
+    
+    # Tabel customer_reviews - untuk menyimpan review dari customer
+    # Check if table exists and has wrong structure, recreate if needed
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='customer_reviews'")
+    if c.fetchone():
+        # Table exists, check if it has created_at column (old structure)
+        c.execute("PRAGMA table_info(customer_reviews)")
+        columns = [col[1] for col in c.fetchall()]
+        if 'created_at' in columns:
+            # Old structure detected, need to recreate table
+            # First, backup existing data
+            c.execute("ALTER TABLE customer_reviews RENAME TO customer_reviews_old")
+            conn.commit()
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS customer_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            secret_code TEXT NOT NULL,
+            trans_id INTEGER,
+            trans_type TEXT NOT NULL,
+            nopol TEXT,
+            no_telp TEXT,
+            nama_customer TEXT NOT NULL,
+            rating INTEGER NOT NULL,
+            review_text TEXT,
+            review_date TEXT NOT NULL,
+            review_time TEXT NOT NULL,
+            FOREIGN KEY (trans_id) REFERENCES kasir_transactions(id)
+        )
+    ''')
+    
+    # Migrate data from old table if it exists
+    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='customer_reviews_old'")
+    if c.fetchone():
+        try:
+            c.execute("""
+                INSERT INTO customer_reviews 
+                (id, secret_code, trans_id, trans_type, nopol, no_telp, nama_customer, rating, review_text, review_date, review_time)
+                SELECT id, secret_code, trans_id, trans_type, nopol, no_telp, nama_customer, rating, review_text, review_date, review_time
+                FROM customer_reviews_old
+            """)
+            c.execute("DROP TABLE customer_reviews_old")
+            conn.commit()
+        except:
+            pass
+    
+    # Migration: Add reward_points column to existing customer_reviews table if it doesn't exist
+    try:
+        c.execute("SELECT reward_points FROM customer_reviews LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column doesn't exist, add it
+        c.execute("ALTER TABLE customer_reviews ADD COLUMN reward_points INTEGER DEFAULT 10")
+        conn.commit()
+    
+    # Tabel customer_points - untuk menyimpan akumulasi poin customer
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS customer_points (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nopol TEXT,
+            no_telp TEXT,
+            nama_customer TEXT NOT NULL,
+            total_points INTEGER DEFAULT 0,
+            last_updated TEXT NOT NULL,
+            UNIQUE(nopol, no_telp)
+        )
+    ''')
+    
     conn.commit()
     conn.close()
+
+
+def generate_secret_code():
+    """Generate unique 8-character secret code"""
+    return secrets.token_urlsafe(6).upper().replace('-', 'X').replace('_', 'Y')[:8]
 
 
 # --- Simpan & Load Customer ---
@@ -484,11 +565,20 @@ def save_kasir_transaction(data):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     try:
+        # Generate unique secret code
+        secret_code = generate_secret_code()
+        while True:
+            # Check if code already exists
+            c.execute("SELECT COUNT(*) FROM kasir_transactions WHERE secret_code = ?", (secret_code,))
+            if c.fetchone()[0] == 0:
+                break
+            secret_code = generate_secret_code()
+        
         c.execute("""
             INSERT INTO kasir_transactions 
             (nopol, nama_customer, no_telp, tanggal, waktu, wash_trans_id, paket_cuci, harga_cuci,
-             coffee_items, harga_coffee, total_bayar, status_bayar, metode_bayar, created_by, catatan)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             coffee_items, harga_coffee, total_bayar, status_bayar, metode_bayar, created_by, catatan, secret_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data.get('nopol', '').upper(),
             data.get('nama_customer', ''),
@@ -504,12 +594,13 @@ def save_kasir_transaction(data):
             data.get('status_bayar', 'Lunas'),
             data.get('metode_bayar', ''),
             data.get('created_by', ''),
-            data.get('catatan', '')
+            data.get('catatan', ''),
+            secret_code
         ))
         conn.commit()
-        return True, "Transaksi kasir berhasil disimpan"
+        return True, "Transaksi kasir berhasil disimpan", secret_code
     except Exception as e:
-        return False, f"Error: {str(e)}"
+        return False, f"Error: {str(e)}", None
     finally:
         conn.close()
 
@@ -589,6 +680,14 @@ Status: {trans_data.get('status_bayar', 'Lunas')}
 
 _Terima kasih atas kunjungan Anda!_
 _Kepuasan Anda adalah prioritas kami_
+
+*🌟 BERIKAN REVIEW & DAPATKAN POIN! 🌟*
+
+Kode Review Anda: *{trans_data.get('secret_code', 'N/A')}*
+
+Akses: https://pp2trial.streamlit.app/
+Masukkan kode di atas untuk memberikan review
+dan dapatkan *10 poin reward*! 🎁
 
 *Sampai jumpa lagi!* 
 
@@ -728,6 +827,131 @@ def create_whatsapp_link(phone_number, message):
     return wa_link
 
 
+# --- Review Customer Functions ---
+def get_transaction_by_secret_code(secret_code):
+    """Ambil transaksi berdasarkan secret code"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT * FROM kasir_transactions WHERE secret_code = ?", (secret_code.upper(),))
+    result = c.fetchone()
+    conn.close()
+    if result:
+        columns = ['id', 'nopol', 'nama_customer', 'no_telp', 'tanggal', 'waktu', 'wash_trans_id', 
+                   'paket_cuci', 'harga_cuci', 'coffee_items', 'harga_coffee', 'total_bayar', 
+                   'status_bayar', 'metode_bayar', 'created_by', 'catatan', 'secret_code']
+        return dict(zip(columns, result))
+    return None
+
+def check_review_exists(secret_code):
+    """Cek apakah secret code sudah pernah digunakan untuk review"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM customer_reviews WHERE secret_code = ?", (secret_code.upper(),))
+    count = c.fetchone()[0]
+    conn.close()
+    return count > 0
+
+def save_customer_review(review_data):
+    """Simpan review customer dan berikan reward points"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        now_wib = datetime.now(WIB)
+        
+        # Simpan review
+        c.execute("""
+            INSERT INTO customer_reviews 
+            (secret_code, trans_id, trans_type, nopol, no_telp, nama_customer, rating, review_text, 
+             review_date, review_time, reward_points)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            review_data.get('secret_code', '').upper(),
+            review_data.get('trans_id'),
+            review_data.get('trans_type', 'kasir'),
+            review_data.get('nopol', ''),
+            review_data.get('no_telp', ''),
+            review_data.get('nama_customer', ''),
+            int(review_data.get('rating', 5)),
+            review_data.get('review_text', ''),
+            now_wib.strftime('%d-%m-%Y'),
+            now_wib.strftime('%H:%M:%S'),
+            10  # Default 10 points per review
+        ))
+        
+        # Update atau tambah customer points
+        identifier_nopol = review_data.get('nopol', '')
+        identifier_telp = review_data.get('no_telp', '')
+        
+        # Cek apakah customer sudah ada
+        c.execute("""
+            SELECT id, total_points FROM customer_points 
+            WHERE (nopol = ? AND nopol != '') OR (no_telp = ? AND no_telp != '')
+        """, (identifier_nopol, identifier_telp))
+        
+        existing = c.fetchone()
+        
+        if existing:
+            # Update points yang ada
+            new_total = existing[1] + 10
+            c.execute("""
+                UPDATE customer_points 
+                SET total_points = ?, last_updated = ?
+                WHERE id = ?
+            """, (new_total, now_wib.strftime('%d-%m-%Y %H:%M:%S'), existing[0]))
+        else:
+            # Insert customer baru
+            c.execute("""
+                INSERT INTO customer_points (nopol, no_telp, nama_customer, total_points, last_updated)
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                identifier_nopol,
+                identifier_telp,
+                review_data.get('nama_customer', ''),
+                10,
+                now_wib.strftime('%d-%m-%Y %H:%M:%S')
+            ))
+        
+        conn.commit()
+        return True, "Review berhasil disimpan! Anda mendapat 10 poin reward 🎉"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def get_all_reviews():
+    """Ambil semua review customer"""
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql("SELECT * FROM customer_reviews ORDER BY review_date DESC, review_time DESC", conn)
+    conn.close()
+    return df
+
+def get_customer_points_by_identifier(nopol=None, no_telp=None):
+    """Ambil poin customer berdasarkan nopol atau no_telp"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    if nopol:
+        c.execute("SELECT * FROM customer_points WHERE nopol = ?", (nopol,))
+    elif no_telp:
+        c.execute("SELECT * FROM customer_points WHERE no_telp = ?", (no_telp,))
+    else:
+        conn.close()
+        return None
+    
+    result = c.fetchone()
+    conn.close()
+    if result:
+        columns = ['id', 'nopol', 'no_telp', 'nama_customer', 'total_points', 'last_updated']
+        return dict(zip(columns, result))
+    return None
+
+def get_all_customer_points():
+    """Ambil semua data poin customer"""
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql("SELECT * FROM customer_points ORDER BY total_points DESC", conn)
+    conn.close()
+    return df
+
+
 
 USERS = {
     "admin": {"password": "admin123", "role": "Admin"},
@@ -767,45 +991,284 @@ def load_audit_trail(user=None):
     return df
 
 def login_page():
-    st.set_page_config(page_title="Login TIME AUTOCARE", layout="centered")
+    st.set_page_config(page_title="TIME AUTOCARE - Review & Login", layout="centered")
     
     st.markdown("""
     <style>
-    .login-container {
-        max-width: 400px;
+    .review-container {
+        max-width: 600px;
         margin: 0 auto;
         padding: 2rem;
         background: white;
         border-radius: 15px;
         box-shadow: 0 4px 20px rgba(0,0,0,0.1);
     }
+    .review-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1.5rem;
+        border-radius: 12px;
+        color: white;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    .star-rating {
+        font-size: 2rem;
+        text-align: center;
+        margin: 1rem 0;
+    }
     </style>
     """, unsafe_allow_html=True)
     
-    st.title("TIME AUTOCARE 🚗")
-    st.markdown("---")
+    # Sidebar untuk login admin/staff
+    with st.sidebar:
+        st.markdown("### 🔐 Staff Login")
+        st.markdown("---")
+        username = st.text_input("👤 Username", key="login_username")
+        password = st.text_input("🔒 Password", type="password", key="login_password")
+        
+        login_btn = st.button("🔐 Login", key="login_btn", use_container_width=True, type="primary")
+        
+        if login_btn:
+            uname = username.strip().lower()
+            if uname in USERS and password == USERS[uname]["password"]:
+                st.session_state["is_logged_in"] = True
+                st.session_state["login_user"] = uname
+                st.session_state["login_role"] = USERS[uname]["role"]
+                add_audit("login", f"Login sebagai {USERS[uname]['role']}")
+                st.success(f"✅ Login berhasil!")
+                st.rerun()
+            else:
+                st.error("❌ Username/password salah")
+        
+        st.markdown("---")
+        st.caption("💡 **Demo Account:**\n- admin / admin123\n- kasir / kasir123\n- supervisor / super123")
     
-    username = st.text_input("👤 Username", key="login_username")
-    password = st.text_input("🔒 Password", type="password", key="login_password")
+    # Main page - Customer Review
+    st.markdown("""
+    <div class="review-header">
+        <h1 style="margin: 0;">🚗 TIME AUTOCARE</h1>
+        <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">Detailing & Ceramic Coating</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns([1,2,1])
+    st.markdown("## ⭐ Berikan Review Anda")
+    st.info("💡 **Dapatkan 10 poin reward** untuk setiap review yang Anda berikan!")
+    
+    # Input secret code
+    st.markdown("### 🔑 Masukkan Kode Review")
+    st.caption("Kode review dikirimkan bersama invoice WhatsApp setelah transaksi")
+    
+    secret_code_input = st.text_input(
+        "Kode Review (8 karakter)",
+        max_chars=8,
+        placeholder="Contoh: ABC12XYZ",
+        key="secret_code_input"
+    ).upper()
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        login_btn = st.button("🔐 Login", key="login_btn", use_container_width=True)
+        verify_btn = st.button("🔍 Verifikasi Kode", use_container_width=True, type="primary")
     
-    if login_btn:
-        uname = username.strip().lower()
-        if uname in USERS and password == USERS[uname]["password"]:
-            st.session_state["is_logged_in"] = True
-            st.session_state["login_user"] = uname
-            st.session_state["login_role"] = USERS[uname]["role"]
-            add_audit("login", f"Login sebagai {USERS[uname]['role']}")
-            st.success(f"✅ Login berhasil sebagai {USERS[uname]['role']}")
-            st.rerun()
+    if verify_btn and secret_code_input:
+        if len(secret_code_input) != 8:
+            st.error("❌ Kode review harus 8 karakter!")
         else:
-            st.error("❌ Username atau password salah.")
+            # Cek apakah sudah pernah review
+            if check_review_exists(secret_code_input):
+                # Ambil data review yang sudah ada
+                conn = sqlite3.connect(DB_NAME)
+                c = conn.cursor()
+                c.execute("SELECT * FROM customer_reviews WHERE secret_code = ?", (secret_code_input,))
+                review = c.fetchone()
+                conn.close()
+                
+                if review:
+                    st.session_state['existing_review'] = {
+                        'nama_customer': review[6],
+                        'nopol': review[4] if review[4] else 'Coffee Only',
+                        'rating': review[7],
+                        'review_text': review[8],
+                        'review_date': review[9],
+                        'review_time': review[10],
+                        'reward_points': review[11]
+                    }
+                    st.session_state['review_already_submitted'] = True
+                    st.rerun()
+            else:
+                # Kode belum pernah digunakan, cek apakah valid
+                trans = get_transaction_by_secret_code(secret_code_input)
+                if trans:
+                    st.session_state['verified_transaction'] = trans
+                    st.session_state['secret_code_verified'] = secret_code_input
+                    st.session_state['review_already_submitted'] = False
+                    st.success(f"✅ Kode valid! Transaksi ditemukan untuk **{trans['nama_customer']}**")
+                    st.rerun()
+                else:
+                    st.error("❌ Kode review tidak valid atau tidak ditemukan.")
     
-    st.markdown("---")
-    st.info("💡 **Demo Account:**\n- admin / admin123\n- kasir / kasir123\n- supervisor / super123")
+    # Tampilkan review yang sudah ada (read-only)
+    if st.session_state.get('review_already_submitted') and st.session_state.get('existing_review'):
+        review = st.session_state['existing_review']
+        
+        st.markdown("---")
+        st.success("✅ Anda sudah memberikan review untuk transaksi ini!")
+        
+        st.markdown("### 📋 Review Anda")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Nama:** {review['nama_customer']}")
+            st.write(f"**Nopol:** {review['nopol']}")
+        with col2:
+            st.write(f"**Tanggal Review:** {review['review_date']}")
+            st.write(f"**Waktu:** {review['review_time']}")
+        
+        st.markdown("---")
+        st.markdown("### ⭐ Rating Anda")
+        st.markdown(f'<div class="star-rating">{"⭐" * review["rating"]} ({review["rating"]}/5)</div>', unsafe_allow_html=True)
+        
+        st.markdown("### 💬 Review Anda")
+        st.info(review['review_text'])
+        
+        st.markdown("---")
+        st.success(f"🎁 Poin reward yang didapat: **+{review['reward_points']} poin**")
+        
+        st.markdown("---")
+        st.warning("⚠️ Setiap kode review hanya dapat digunakan sekali. Anda tidak dapat mengubah review yang sudah dikirim.")
+        
+        if st.button("🔙 Kembali ke Halaman Awal"):
+            # Clear session
+            if 'existing_review' in st.session_state:
+                del st.session_state['existing_review']
+            if 'review_already_submitted' in st.session_state:
+                del st.session_state['review_already_submitted']
+            st.rerun()
+    
+    # Form review jika kode sudah diverifikasi dan belum pernah submit
+    elif st.session_state.get('verified_transaction') and not st.session_state.get('review_already_submitted'):
+        trans = st.session_state['verified_transaction']
+        
+        st.markdown("---")
+        st.markdown("### 📋 Detail Transaksi")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Nama:** {trans['nama_customer']}")
+            st.write(f"**Nopol:** {trans['nopol']}")
+            st.write(f"**Tanggal:** {trans['tanggal']}")
+        with col2:
+            st.write(f"**Paket:** {trans['paket_cuci'] or 'Coffee Only'}")
+            st.write(f"**Total:** Rp {trans['total_bayar']:,.0f}")
+            st.write(f"**Status:** {trans['status_bayar']}")
+        
+        st.markdown("---")
+        st.markdown("### ⭐ Berikan Rating Anda")
+        
+        # Rating dengan bintang
+        rating = st.select_slider(
+            "Pilih rating",
+            options=[1, 2, 3, 4, 5],
+            value=5,
+            format_func=lambda x: "⭐" * x,
+            key="rating_slider"
+        )
+        
+        st.markdown(f'<div class="star-rating">{"⭐" * rating}</div>', unsafe_allow_html=True)
+        
+        # Review text
+        st.markdown("### 💬 Tulis Review Anda")
+        review_text = st.text_area(
+            "Bagaimana pengalaman Anda?",
+            placeholder="Ceritakan pengalaman Anda menggunakan layanan kami...",
+            height=150,
+            key="review_text_input"
+        )
+        
+        # Submit review
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            submit_review_btn = st.button("📤 Kirim Review", use_container_width=True, type="primary", key="submit_review")
+        
+        if submit_review_btn:
+            if not review_text or len(review_text.strip()) < 10:
+                st.error("❌ Mohon tulis review minimal 10 karakter")
+            else:
+                review_data = {
+                    'secret_code': st.session_state['secret_code_verified'],
+                    'trans_id': trans['id'],
+                    'trans_type': 'kasir',
+                    'nopol': trans['nopol'],
+                    'no_telp': trans['no_telp'],
+                    'nama_customer': trans['nama_customer'],
+                    'rating': rating,
+                    'review_text': review_text.strip()
+                }
+                
+                success, msg = save_customer_review(review_data)
+                
+                if success:
+                    st.success(msg)
+                    st.balloons()
+                    
+                    # Show points info
+                    points_info = get_customer_points_by_identifier(
+                        nopol=trans['nopol'] if trans['nopol'] else None,
+                        no_telp=trans['no_telp'] if not trans['nopol'] else None
+                    )
+                    
+                    if points_info:
+                        st.info(f"🎁 Total poin Anda sekarang: **{points_info['total_points']} poin**")
+                    
+                    st.markdown("---")
+                    st.success("✅ Terima kasih atas review Anda! Poin reward sudah ditambahkan ke akun Anda.")
+                    st.info("💡 Review Anda telah tersimpan dan tidak dapat diubah lagi.")
+                    
+                    # Set flag bahwa review sudah disubmit
+                    st.session_state['existing_review'] = {
+                        'nama_customer': trans['nama_customer'],
+                        'nopol': trans['nopol'] if trans['nopol'] else 'Coffee Only',
+                        'rating': rating,
+                        'review_text': review_text.strip(),
+                        'review_date': datetime.now(WIB).strftime("%d-%m-%Y"),
+                        'review_time': datetime.now(WIB).strftime("%H:%M:%S"),
+                        'reward_points': 10
+                    }
+                    st.session_state['review_already_submitted'] = True
+                    
+                    # Clear transaction session
+                    if 'verified_transaction' in st.session_state:
+                        del st.session_state['verified_transaction']
+                    if 'secret_code_verified' in st.session_state:
+                        del st.session_state['secret_code_verified']
+                    
+                    if st.button("🔙 Kembali ke Halaman Awal"):
+                        if 'existing_review' in st.session_state:
+                            del st.session_state['existing_review']
+                        if 'review_already_submitted' in st.session_state:
+                            del st.session_state['review_already_submitted']
+                        st.rerun()
+                else:
+                    st.error(msg)
+    
+    # Info tambahan - hanya tampil jika tidak ada review yang aktif
+    if not st.session_state.get('verified_transaction') and not st.session_state.get('review_already_submitted'):
+        st.markdown("---")
+        st.markdown("### ℹ️ Tentang Program Reward")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("""
+            **Keuntungan:**
+            - 🎁 10 poin per review
+            - 🎉 Tukar poin dengan promo
+            - ⭐ Poin tidak ada masa kadaluarsa
+            """)
+        with col2:
+            st.markdown("""
+            **Cara Mendapat Kode:**
+            - 💳 Lakukan transaksi
+            - 📱 Terima invoice via WhatsApp
+            - 🔑 Gunakan kode review di invoice
+            """)
 
 
 def dashboard_page(role):
@@ -1539,179 +2002,174 @@ Terima kasih atas kepercayaan Anda! 🙏
             
             if len(selected_rows) == 0:
                 st.info("ℹ️ Centang checkbox pada tabel di atas untuk memilih transaksi yang akan diselesaikan")
-                st.stop()
             elif len(selected_rows) > 1:
                 st.warning("⚠️ Silakan pilih hanya satu transaksi untuk diselesaikan")
-                st.stop()
-            
-            # Dapatkan ID dari transaksi yang dipilih
-            selected_id = selected_rows.iloc[0]['ID']
-            selected_trans = df_proses[df_proses['id'] == selected_id].iloc[0]
-            
-            # Double check status
-            if selected_trans['status'].strip() != 'Dalam Proses':
-                st.error(f"❌ Error: Transaksi ini berstatus '{selected_trans['status']}', bukan 'Dalam Proses'")
-                st.warning("🔄 Halaman akan di-refresh otomatis...")
-                import time
-                time.sleep(2)
-                st.rerun()
-                st.stop()
-            
-            
-            # Checklist Kondisi Saat Datang - harus dicheck ulang untuk memastikan kondisi tetap sesuai
-            st.markdown("""
-            <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
-                <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">✅ Checklist Kondisi Saat Datang</h4>
-                <p style="font-size: 0.85rem; color: #6c757d; margin: 0.5rem 0;">⚠️ Pastikan kondisi setelah dibersihkan masih sesuai dengan saat datang</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            selected_checks_datang_ulang = []
-            try:
-                checks_datang = json.loads(selected_trans['checklist_datang'])
-                if checks_datang:
-                    cols = st.columns(3)
-                    for idx, check in enumerate(checks_datang):
-                        with cols[idx % 3]:
-                            # Checkbox untuk konfirmasi ulang kondisi masih sesuai
-                            if st.checkbox(check, key=f"check_datang_ulang_{idx}", value=False):
-                                selected_checks_datang_ulang.append(check)
-                else:
-                    st.info("ℹ️ Tidak ada checklist kondisi saat datang")
-            except:
-                st.info("ℹ️ Tidak ada checklist kondisi saat datang")
-            
-            if selected_trans['qc_barang']:
+            else:
+                # Dapatkan ID dari transaksi yang dipilih
+                selected_id = selected_rows.iloc[0]['ID']
+                selected_trans = df_proses[df_proses['id'] == selected_id].iloc[0]
+                
+                # Double check status
+                if selected_trans['status'].strip() != 'Dalam Proses':
+                    st.error(f"❌ Error: Transaksi ini berstatus '{selected_trans['status']}', bukan 'Dalam Proses'")
+                    st.warning("🔄 Halaman akan di-refresh otomatis...")
+                    import time
+                    time.sleep(2)
+                    st.rerun()
+                
+                
+                # Checklist Kondisi Saat Datang - harus dicheck ulang untuk memastikan kondisi tetap sesuai
                 st.markdown("""
-                <div style="margin-top: 0.8rem;">
-                    <div style="font-size: 0.9rem; font-weight: 600; color: #2d3436; margin-bottom: 0.4rem;">📋 Barang dalam Mobil</div>
+                <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed #e0e0e0;">
+                    <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">✅ Checklist Kondisi Saat Datang</h4>
+                    <p style="font-size: 0.85rem; color: #6c757d; margin: 0.5rem 0;">⚠️ Pastikan kondisi setelah dibersihkan masih sesuai dengan saat datang</p>
                 </div>
                 """, unsafe_allow_html=True)
-                st.info(selected_trans['qc_barang'])
-            
-            if selected_trans['catatan']:
-                st.markdown("""
-                <div style="margin-top: 0.8rem;">
-                    <div style="font-size: 0.9rem; font-weight: 600; color: #2d3436; margin-bottom: 0.4rem;">💬 Catatan Tambahan</div>
-                </div>
-                """, unsafe_allow_html=True)
-                st.warning(selected_trans['catatan'])
-        
-            
-            # Checklist selesai dengan design modern
-            st.markdown("""
-            <div style="margin: 1.5rem 0 0.5rem 0;">
-                <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">✅ Checklist QC Selesai Cuci</h4>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            selected_checks_selesai = []
-            cols = st.columns(3)
-            for idx, item in enumerate(checklist_selesai_items):
-                with cols[idx % 3]:
-                    if st.checkbox(item, key=f"check_done_{idx}", value=False):
-                        selected_checks_selesai.append(item)
-            
-            # QC final barang dengan design modern
-            st.markdown("""
-            <div style="margin: 1.2rem 0 0.5rem 0;">
-                <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">📋 Konfirmasi Final</h4>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.markdown("""
-            <div style="margin: 0.5rem 0 0.3rem 0;">
-                <label style="font-weight: 600; color: #2d3436; font-size: 0.85rem;">✓ Konfirmasi Barang Customer Kembali Lengkap</label>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            qc_final = st.text_area(
-                "Konfirmasi Barang",
-                value=selected_trans['qc_barang'],
-                placeholder="Pastikan semua barang customer kembali lengkap",
-                key="finish_qc", 
-                height=100,
-                label_visibility="collapsed"
-            )
-            
-            st.markdown("""
-            <div style="margin: 0.8rem 0 0.3rem 0;">
-                <label style="font-weight: 600; color: #2d3436; font-size: 0.85rem;">📝 Catatan Penyelesaian</label>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            catatan_final = st.text_area(
-                "Catatan Penyelesaian",
-                placeholder="Hasil pengerjaan, kondisi akhir, dll...", 
-                key="finish_catatan", 
-                height=80,
-                label_visibility="collapsed"
-            )
-            
-            # Finish button dengan design modern
-            st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
-            col1, col2, col3 = st.columns([1.5, 2, 1.5])
-            with col2:
-                finish_btn = st.button("✅ Selesaikan Transaksi", type="primary", use_container_width=True, key="btn_finish_trans")
-            
-            if finish_btn:
-                # Validasi checklist minimal harus ada
-                if not selected_checks_datang_ulang:
-                    st.error("❌ Mohon centang checklist kondisi saat datang untuk memastikan kondisi setelah dibersihkan masih sesuai!")
-                elif not selected_checks_selesai:
-                    st.error("❌ Mohon pilih minimal 1 checklist QC selesai!")
-                elif not qc_final or qc_final.strip() == "":
-                    st.error("❌ Mohon isi konfirmasi barang customer!")
-                else:
-                    # Debug: tampilkan ID yang akan diupdate
-                    st.warning(f"🔍 Akan mengupdate transaksi ID: **{selected_id}** (Tipe: {type(selected_id).__name__})")
-                    
-                    # Cek ulang status sebelum update (double check)
-                    df_recheck = get_all_transactions()
-                    matching_trans = df_recheck[df_recheck['id'] == selected_id]
-                    
-                    if len(matching_trans) == 0:
-                        st.error(f"❌ Transaksi ID {selected_id} tidak ditemukan saat recheck!")
-                        st.write("IDs yang ada:", df_recheck['id'].tolist()[:10])
-                        st.stop()
-                    
-                    current_status = matching_trans['status'].iloc[0].strip()
-                    
-                    if current_status != 'Dalam Proses':
-                        st.error(f"❌ Transaksi ini sudah berstatus '{current_status}'. Halaman akan di-refresh.")
-                        import time
-                        time.sleep(2)
-                        st.rerun()
-                        st.stop()
-                    
-                    # Pastikan ID adalah integer
-                    trans_id_to_update = int(selected_id)
-                    
-                    # Gunakan waktu sistem otomatis saat tombol diklik
-                    waktu_selesai_otomatis = datetime.now(WIB).strftime('%H:%M:%S')
-                    
-                    success, msg = update_transaction_finish(
-                        trans_id_to_update,
-                        waktu_selesai_otomatis,
-                        json.dumps(selected_checks_selesai),
-                        qc_final,
-                        catatan_final
-                    )
-                    
-                    if success:
-                        add_audit("transaksi_selesai", f"ID: {selected_id}, Nopol: {selected_trans['nopol']}")
-                        
-                        # Clear any session state cache
-                        if 'finish_trans' in st.session_state:
-                            del st.session_state['finish_trans']
-                        
-                        st.success(f"✅ {msg} - Transaksi telah dipindahkan ke status Selesai")
-                        st.balloons()
-                        import time
-                        time.sleep(1)  # Delay untuk memastikan database ter-commit
-                        st.rerun()
+                
+                selected_checks_datang_ulang = []
+                try:
+                    checks_datang = json.loads(selected_trans['checklist_datang'])
+                    if checks_datang:
+                        cols = st.columns(3)
+                        for idx, check in enumerate(checks_datang):
+                            with cols[idx % 3]:
+                                # Checkbox untuk konfirmasi ulang kondisi masih sesuai
+                                if st.checkbox(check, key=f"check_datang_ulang_{idx}", value=False):
+                                    selected_checks_datang_ulang.append(check)
                     else:
-                        st.error(f"❌ {msg}")
+                        st.info("ℹ️ Tidak ada checklist kondisi saat datang")
+                except:
+                    st.info("ℹ️ Tidak ada checklist kondisi saat datang")
+                
+                if selected_trans['qc_barang']:
+                    st.markdown("""
+                    <div style="margin-top: 0.8rem;">
+                        <div style="font-size: 0.9rem; font-weight: 600; color: #2d3436; margin-bottom: 0.4rem;">📋 Barang dalam Mobil</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.info(selected_trans['qc_barang'])
+                
+                if selected_trans['catatan']:
+                    st.markdown("""
+                    <div style="margin-top: 0.8rem;">
+                        <div style="font-size: 0.9rem; font-weight: 600; color: #2d3436; margin-bottom: 0.4rem;">💬 Catatan Tambahan</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.warning(selected_trans['catatan'])
+            
+                
+                # Checklist selesai dengan design modern
+                st.markdown("""
+                <div style="margin: 1.5rem 0 0.5rem 0;">
+                    <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">✅ Checklist QC Selesai Cuci</h4>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                selected_checks_selesai = []
+                cols = st.columns(3)
+                for idx, item in enumerate(checklist_selesai_items):
+                    with cols[idx % 3]:
+                        if st.checkbox(item, key=f"check_done_{idx}", value=False):
+                            selected_checks_selesai.append(item)
+                
+                # QC final barang dengan design modern
+                st.markdown("""
+                <div style="margin: 1.2rem 0 0.5rem 0;">
+                    <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">📋 Konfirmasi Final</h4>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("""
+                <div style="margin: 0.5rem 0 0.3rem 0;">
+                    <label style="font-weight: 600; color: #2d3436; font-size: 0.85rem;">✓ Konfirmasi Barang Customer Kembali Lengkap</label>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                qc_final = st.text_area(
+                    "Konfirmasi Barang",
+                    value=selected_trans['qc_barang'],
+                    placeholder="Pastikan semua barang customer kembali lengkap",
+                    key="finish_qc", 
+                    height=100,
+                    label_visibility="collapsed"
+                )
+                
+                st.markdown("""
+                <div style="margin: 0.8rem 0 0.3rem 0;">
+                    <label style="font-weight: 600; color: #2d3436; font-size: 0.85rem;">📝 Catatan Penyelesaian</label>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                catatan_final = st.text_area(
+                    "Catatan Penyelesaian",
+                    placeholder="Hasil pengerjaan, kondisi akhir, dll...", 
+                    key="finish_catatan", 
+                    height=80,
+                    label_visibility="collapsed"
+                )
+                
+                # Finish button dengan design modern
+                st.markdown("<div style='margin-top: 1.5rem;'></div>", unsafe_allow_html=True)
+                col1, col2, col3 = st.columns([1.5, 2, 1.5])
+                with col2:
+                    finish_btn = st.button("✅ Selesaikan Transaksi", type="primary", use_container_width=True, key="btn_finish_trans")
+                
+                if finish_btn:
+                    # Validasi checklist minimal harus ada
+                    if not selected_checks_datang_ulang:
+                        st.error("❌ Mohon centang checklist kondisi saat datang untuk memastikan kondisi setelah dibersihkan masih sesuai!")
+                    elif not selected_checks_selesai:
+                        st.error("❌ Mohon pilih minimal 1 checklist QC selesai!")
+                    elif not qc_final or qc_final.strip() == "":
+                        st.error("❌ Mohon isi konfirmasi barang customer!")
+                    else:
+                        # Debug: tampilkan ID yang akan diupdate
+                        st.warning(f"🔍 Akan mengupdate transaksi ID: **{selected_id}** (Tipe: {type(selected_id).__name__})")
+                        
+                        # Cek ulang status sebelum update (double check)
+                        df_recheck = get_all_transactions()
+                        matching_trans = df_recheck[df_recheck['id'] == selected_id]
+                        
+                        if len(matching_trans) == 0:
+                            st.error(f"❌ Transaksi ID {selected_id} tidak ditemukan saat recheck!")
+                            st.write("IDs yang ada:", df_recheck['id'].tolist()[:10])
+                        else:
+                            current_status = matching_trans['status'].iloc[0].strip()
+                            
+                            if current_status != 'Dalam Proses':
+                                st.error(f"❌ Transaksi ini sudah berstatus '{current_status}'. Halaman akan di-refresh.")
+                                import time
+                                time.sleep(2)
+                                st.rerun()
+                            else:
+                                # Pastikan ID adalah integer
+                                trans_id_to_update = int(selected_id)
+                                
+                                # Gunakan waktu sistem otomatis saat tombol diklik
+                                waktu_selesai_otomatis = datetime.now(WIB).strftime('%H:%M:%S')
+                                
+                                success, msg = update_transaction_finish(
+                                    trans_id_to_update,
+                                    waktu_selesai_otomatis,
+                                    json.dumps(selected_checks_selesai),
+                                    qc_final,
+                                    catatan_final
+                                )
+                                
+                                if success:
+                                    add_audit("transaksi_selesai", f"ID: {selected_id}, Nopol: {selected_trans['nopol']}")
+                                    
+                                    # Clear any session state cache
+                                    if 'finish_trans' in st.session_state:
+                                        del st.session_state['finish_trans']
+                                    
+                                    st.success(f"✅ {msg} - Transaksi telah dipindahkan ke status Selesai")
+                                    st.balloons()
+                                    import time
+                                    time.sleep(1)  # Delay untuk memastikan database ter-commit
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
     
     with tab3:
         st.subheader("📚 History Customer - Transaksi Selesai")
@@ -2084,11 +2542,10 @@ def kasir_page(role):
     df_pending = get_pending_wash_transactions()
     jumlah_pending = len(df_pending)
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         f"💰 Transaksi Kasir ({jumlah_pending} Pending)",
-        "☕️ Coffee Only",
+        f"☕️ Coffee Shop ({jumlah_history_coffee})",
         f"📜 History Kasir ({jumlah_history_kasir})",
-        f"📜 History Coffee ({jumlah_history_coffee})",
         "⚙️ Setting Menu"
     ])
     
@@ -2096,287 +2553,337 @@ def kasir_page(role):
         st.subheader("💰 Transaksi Kasir - Pembayaran")
         st.info("💡 **Alur:** SPV input data cuci mobil → Data masuk ke Kasir → Customer bayar di sini")
         
-        # Tampilkan daftar mobil yang pending pembayaran
+        # Tampilkan daftar mobil yang pending pembayaran dalam bentuk tabel
+        wash_trans_selected = None
+        
         if not df_pending.empty:
             st.markdown("---")
             st.markdown("### 🚗 Mobil Pending Pembayaran")
             st.warning(f"⚠️ Ada **{len(df_pending)}** transaksi cuci mobil yang menunggu pembayaran")
             
-            for idx, row in df_pending.iterrows():
-                with st.expander(f"🚗 {row['nopol']} - {row['nama_customer']} | {row['paket_cuci']} | Rp {row['harga']:,.0f}", expanded=False):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write(f"**Nopol:** {row['nopol']}")
-                        st.write(f"**Nama:** {row['nama_customer']}")
-                        st.write(f"**Paket:** {row['paket_cuci']}")
-                        st.write(f"**Tanggal:** {row['tanggal']}")
-                    with col2:
-                        st.write(f"**Waktu Masuk:** {row['waktu_masuk']}")
-                        st.write(f"**Status:** {row['status']}")
-                        st.write(f"**Harga Cuci:** Rp {row['harga']:,.0f}")
-                        st.write(f"**SPV:** {row.get('created_by', '-')}")
-                    
-                    if st.button(f"✅ Proses Pembayaran", key=f"pay_{row['id']}", type="primary"):
-                        st.session_state[f'selected_wash_{row["id"]}'] = True
-                        st.rerun()
+            # Buat tabel dengan checkbox
+            df_display = df_pending[['id', 'nopol', 'nama_customer', 'paket_cuci', 'tanggal', 'waktu_masuk', 'status', 'harga', 'created_by']].copy()
+            df_display.insert(0, 'Pilih', False)
+            df_display['harga'] = df_display['harga'].apply(lambda x: f"Rp {x:,.0f}")
+            df_display.columns = ['Pilih', 'ID', 'Nopol', 'Customer', 'Paket', 'Tanggal', 'Jam Masuk', 'Status', 'Harga', 'SPV']
+            
+            # Tampilkan tabel dengan data editor
+            edited_df = st.data_editor(
+                df_display,
+                use_container_width=True,
+                hide_index=True,
+                height=min(400, (len(df_display) + 1) * 35 + 3),
+                column_config={
+                    "Pilih": st.column_config.CheckboxColumn(
+                        "Pilih",
+                        help="Centang untuk memilih transaksi yang akan diproses",
+                        default=False,
+                    )
+                },
+                disabled=["ID", "Nopol", "Customer", "Paket", "Tanggal", "Jam Masuk", "Status", "Harga", "SPV"],
+                key="pending_wash_table"
+            )
+            
+            # Cek apakah ada yang dipilih
+            selected_rows = edited_df[edited_df['Pilih'] == True]
+            
+            if len(selected_rows) > 1:
+                st.warning("⚠️ Silakan pilih hanya satu transaksi untuk diproses")
+            elif len(selected_rows) == 1:
+                # Ambil data transaksi yang dipilih
+                selected_id = selected_rows.iloc[0]['ID']
+                wash_trans_selected = df_pending[df_pending['id'] == selected_id].iloc[0]
+                
+                # Tampilkan info transaksi yang dipilih
+                st.success(f"✅ Dipilih: **{wash_trans_selected['nopol']}** - {wash_trans_selected['nama_customer']} | {wash_trans_selected['paket_cuci']} | Rp {wash_trans_selected['harga']:,.0f}")
         
         st.markdown("---")
         
-        # Form pembayaran
-        st.markdown("### 💳 Form Pembayaran")
-        
-        # Pilih transaksi cuci mobil (jika ada)
-        wash_trans_selected = None
-        if not df_pending.empty:
-            st.markdown("##### 🚗 Transaksi Cuci Mobil")
+        # Form pembayaran - hanya tampil jika ada transaksi yang dipilih atau tidak ada pending
+        if wash_trans_selected is not None or df_pending.empty:
+            st.markdown("### 💳 Form Pembayaran")
             
-            # Cek apakah ada yang dipilih dari tombol di atas
-            selected_id = None
-            for key in st.session_state.keys():
-                if key.startswith('selected_wash_') and st.session_state[key]:
-                    selected_id = int(key.replace('selected_wash_', ''))
-                    break
+            # Data customer
+            st.markdown("##### 👤 Data Customer")
+            col1, col2, col3 = st.columns(3)
             
-            wash_options = ["Tidak ada"] + [f"{row['nopol']} - {row['nama_customer']} - {row['paket_cuci']} (Rp {row['harga']:,.0f})" for _, row in df_pending.iterrows()]
+            # Auto-fill dari wash transaction jika dipilih
+            default_nopol = wash_trans_selected['nopol'] if wash_trans_selected is not None else ""
+            default_nama = wash_trans_selected['nama_customer'] if wash_trans_selected is not None else ""
             
-            # Set default index jika ada yang dipilih
-            default_idx = 0
-            if selected_id:
-                for i, (_, row) in enumerate(df_pending.iterrows(), 1):
-                    if row['id'] == selected_id:
-                        default_idx = i
-                        break
+            # Get customer info if nopol is available
+            customer_telp = ""
+            if default_nopol:
+                cust_data = get_customer_by_nopol(default_nopol)
+                if cust_data:
+                    customer_telp = cust_data.get('no_telp', '')
             
-            wash_choice = st.selectbox("Pilih Transaksi Cuci Mobil", wash_options, index=default_idx, key="wash_select")
+            with col1:
+                nopol_input = st.text_input("No. Polisi", value=default_nopol, key="kasir_nopol", placeholder="B1234XYZ")
+            with col2:
+                nama_input = st.text_input("Nama Customer", value=default_nama, key="kasir_nama", placeholder="Nama customer")
+            with col3:
+                telp_input = st.text_input("No. WhatsApp", value=customer_telp, key="kasir_telp", placeholder="08xxx atau 628xxx")
             
-            if wash_choice != "Tidak ada":
-                wash_idx = wash_options.index(wash_choice) - 1
-                wash_trans_selected = df_pending.iloc[wash_idx]
-        
-        # Data customer
-        st.markdown("##### 👤 Data Customer")
-        col1, col2, col3 = st.columns(3)
-        
-        # Auto-fill dari wash transaction jika dipilih
-        default_nopol = wash_trans_selected['nopol'] if wash_trans_selected is not None else ""
-        default_nama = wash_trans_selected['nama_customer'] if wash_trans_selected is not None else ""
-        
-        # Get customer info if nopol is available
-        customer_telp = ""
-        if default_nopol:
-            cust_data = get_customer_by_nopol(default_nopol)
-            if cust_data:
-                customer_telp = cust_data.get('no_telp', '')
-        
-        with col1:
-            nopol_input = st.text_input("No. Polisi", value=default_nopol, key="kasir_nopol", placeholder="B1234XYZ")
-        with col2:
-            nama_input = st.text_input("Nama Customer", value=default_nama, key="kasir_nama", placeholder="Nama customer")
-        with col3:
-            telp_input = st.text_input("No. WhatsApp", value=customer_telp, key="kasir_telp", placeholder="08xxx atau 628xxx")
-        
-        # Coffee/Snack order
-        st.markdown("---")
-        st.markdown("##### ☕️ Tambah Coffee/Snack (Opsional)")
-        
-        menu = get_coffee_menu()
-        coffee_order = {}
-        
-        if menu:
-            for idx, (name, price) in enumerate(menu.items()):
-                c1, c2 = st.columns([3,1])
-                with c1:
-                    st.write(f"**{name}** - Rp {price:,.0f}")
-                with c2:
-                    qty = st.number_input(f"Qty", min_value=0, value=0, key=f"kasir_coffee_qty_{idx}", label_visibility="collapsed")
-                if qty and qty > 0:
-                    coffee_order[name] = { 'price': price, 'qty': int(qty), 'subtotal': price * int(qty) }
-        
-        # Ringkasan pembayaran
-        st.markdown("---")
-        st.markdown("### 🧾 Ringkasan Pembayaran")
-        
-        harga_cuci = int(wash_trans_selected['harga']) if wash_trans_selected is not None else 0
-        harga_coffee = sum(v['subtotal'] for v in coffee_order.values()) if coffee_order else 0
-        total_bayar = harga_cuci + harga_coffee
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if wash_trans_selected is not None:
-                st.metric("🚗 Biaya Cuci Mobil", f"Rp {harga_cuci:,.0f}")
+            # Coffee/Snack order
+            st.markdown("---")
+            st.markdown("##### ☕️ Tambah Coffee/Snack (Opsional)")
+            
+            menu = get_coffee_menu()
+            coffee_order = {}
+            
+            if menu:
+                for idx, (name, price) in enumerate(menu.items()):
+                    c1, c2 = st.columns([3,1])
+                    with c1:
+                        st.write(f"**{name}** - Rp {price:,.0f}")
+                    with c2:
+                        qty = st.number_input(f"Qty", min_value=0, value=0, key=f"kasir_coffee_qty_{idx}", label_visibility="collapsed")
+                    if qty and qty > 0:
+                        coffee_order[name] = { 'price': price, 'qty': int(qty), 'subtotal': price * int(qty) }
+            
+            # Ringkasan pembayaran
+            st.markdown("---")
+            st.markdown("### 🧾 Ringkasan Pembayaran")
+            
+            harga_cuci = int(wash_trans_selected['harga']) if wash_trans_selected is not None else 0
+            harga_coffee = sum(v['subtotal'] for v in coffee_order.values()) if coffee_order else 0
+            total_bayar = harga_cuci + harga_coffee
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if wash_trans_selected is not None:
+                    st.metric("🚗 Biaya Cuci Mobil", f"Rp {harga_cuci:,.0f}")
+                if coffee_order:
+                    st.metric("☕️ Biaya Coffee/Snack", f"Rp {harga_coffee:,.0f}")
+            with col2:
+                st.metric("💰 TOTAL PEMBAYARAN", f"Rp {total_bayar:,.0f}")
+            
+            # Detail coffee order jika ada
             if coffee_order:
-                st.metric("☕️ Biaya Coffee/Snack", f"Rp {harga_coffee:,.0f}")
-        with col2:
-            st.metric("💰 TOTAL PEMBAYARAN", f"Rp {total_bayar:,.0f}")
-        
-        # Detail coffee order jika ada
-        if coffee_order:
-            with st.expander("📋 Detail Pesanan Coffee/Snack"):
-                df_coffee = pd.DataFrame([{
-                    'Item': k,
-                    'Harga': f"Rp {v['price']:,.0f}",
-                    'Qty': v['qty'],
-                    'Subtotal': f"Rp {v['subtotal']:,.0f}"
-                } for k, v in coffee_order.items()])
-                st.table(df_coffee)
-        
-        # Metode pembayaran dan catatan
-        col1, col2 = st.columns(2)
-        with col1:
-            metode_bayar = st.selectbox("Metode Pembayaran", ["Tunai", "Transfer", "QRIS", "Kartu Debit/Kredit"], key="metode_bayar")
-        with col2:
-            status_bayar = st.selectbox("Status Pembayaran", ["Lunas", "DP", "Belum Bayar"], key="status_bayar")
-        
-        catatan_kasir = st.text_area("Catatan (Opsional)", key="catatan_kasir", placeholder="Catatan tambahan...")
-        
-        # Tombol simpan transaksi
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            save_kasir_btn = st.button("💾 SIMPAN & PROSES PEMBAYARAN", type="primary", use_container_width=True, key="save_kasir_trans")
-        
-        if save_kasir_btn:
-            # Validasi
-            if not nopol_input or not nama_input:
-                st.error("❌ Nopol dan Nama Customer harus diisi!")
-            elif total_bayar <= 0:
-                st.error("❌ Minimal harus ada transaksi cuci mobil atau coffee!")
-            else:
-                now_wib = datetime.now(WIB)
-                
-                # Siapkan data transaksi kasir
-                kasir_data = {
-                    'nopol': nopol_input,
-                    'nama_customer': nama_input,
-                    'no_telp': telp_input,
-                    'tanggal': now_wib.strftime('%d-%m-%Y'),
-                    'waktu': now_wib.strftime('%H:%M:%S'),
-                    'wash_trans_id': int(wash_trans_selected['id']) if wash_trans_selected is not None else None,
-                    'paket_cuci': wash_trans_selected['paket_cuci'] if wash_trans_selected is not None else '',
-                    'harga_cuci': harga_cuci,
-                    'coffee_items': json.dumps([{'name': k, 'price': v['price'], 'qty': v['qty']} for k, v in coffee_order.items()], ensure_ascii=False) if coffee_order else '',
-                    'harga_coffee': harga_coffee,
-                    'total_bayar': total_bayar,
-                    'status_bayar': status_bayar,
-                    'metode_bayar': metode_bayar,
-                    'created_by': st.session_state.get('login_user', ''),
-                    'catatan': catatan_kasir
-                }
-                
-                success, msg = save_kasir_transaction(kasir_data)
-                
-                if success:
-                    st.success("✅ " + msg)
-                    add_audit('kasir_transaction', f"Transaksi kasir {nopol_input} - Total: Rp {total_bayar:,.0f}")
-                    
-                    # Generate WhatsApp invoice if phone number is provided
-                    if telp_input:
-                        toko_info = get_toko_info()
-                        invoice_text = generate_kasir_invoice(kasir_data, toko_info)
-                        whatsapp_link = create_whatsapp_link(telp_input, invoice_text)
-                        
-                        st.markdown("---")
-                        st.markdown("### 📱 Invoice WhatsApp")
-                        st.success(f"✅ Transaksi berhasil! Kirim invoice ke **{nama_input}**")
-                        st.link_button("💬 Kirim Invoice via WhatsApp", whatsapp_link, use_container_width=True)
-                        
-                        with st.expander("👁️ Preview Invoice"):
-                            st.text(invoice_text)
-                        
-                        # Clear selected state
-                        for key in list(st.session_state.keys()):
-                            if key.startswith('selected_wash_'):
-                                del st.session_state[key]
-                    else:
-                        st.rerun()
+                with st.expander("📋 Detail Pesanan Coffee/Snack"):
+                    df_coffee = pd.DataFrame([{
+                        'Item': k,
+                        'Harga': f"Rp {v['price']:,.0f}",
+                        'Qty': v['qty'],
+                        'Subtotal': f"Rp {v['subtotal']:,.0f}"
+                    } for k, v in coffee_order.items()])
+                    st.table(df_coffee)
+            
+            # Metode pembayaran dan catatan
+            col1, col2 = st.columns(2)
+            with col1:
+                metode_bayar = st.selectbox("Metode Pembayaran", ["Tunai", "Transfer", "QRIS", "Kartu Debit/Kredit"], key="metode_bayar")
+            with col2:
+                status_bayar = st.selectbox("Status Pembayaran", ["Lunas", "DP", "Belum Bayar"], key="status_bayar")
+            
+            catatan_kasir = st.text_area("Catatan (Opsional)", key="catatan_kasir", placeholder="Catatan tambahan...")
+            
+            # Tombol simpan transaksi
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                save_kasir_btn = st.button("💾 SIMPAN & PROSES PEMBAYARAN", type="primary", use_container_width=True, key="save_kasir_trans")
+            
+            if save_kasir_btn:
+                # Validasi
+                if not nopol_input or not nama_input:
+                    st.error("❌ Nopol dan Nama Customer harus diisi!")
+                elif total_bayar <= 0:
+                    st.error("❌ Minimal harus ada transaksi cuci mobil atau coffee!")
                 else:
-                    st.error("❌ " + msg)
+                    now_wib = datetime.now(WIB)
+                    
+                    # Siapkan data transaksi kasir
+                    kasir_data = {
+                        'nopol': nopol_input,
+                        'nama_customer': nama_input,
+                        'no_telp': telp_input,
+                        'tanggal': now_wib.strftime('%d-%m-%Y'),
+                        'waktu': now_wib.strftime('%H:%M:%S'),
+                        'wash_trans_id': int(wash_trans_selected['id']) if wash_trans_selected is not None else None,
+                        'paket_cuci': wash_trans_selected['paket_cuci'] if wash_trans_selected is not None else '',
+                        'harga_cuci': harga_cuci,
+                        'coffee_items': json.dumps([{'name': k, 'price': v['price'], 'qty': v['qty']} for k, v in coffee_order.items()], ensure_ascii=False) if coffee_order else '',
+                        'harga_coffee': harga_coffee,
+                        'total_bayar': total_bayar,
+                        'status_bayar': status_bayar,
+                        'metode_bayar': metode_bayar,
+                        'created_by': st.session_state.get('login_user', ''),
+                        'catatan': catatan_kasir
+                    }
+                    
+                    success, msg, secret_code = save_kasir_transaction(kasir_data)
+                    
+                    if success:
+                        st.success("✅ " + msg)
+                        add_audit('kasir_transaction', f"Transaksi kasir {nopol_input} - Total: Rp {total_bayar:,.0f}")
+                        
+                        # Add secret_code to kasir_data for invoice
+                        kasir_data['secret_code'] = secret_code
+                        
+                        # Generate WhatsApp invoice if phone number is provided
+                        if telp_input:
+                            toko_info = get_toko_info()
+                            invoice_text = generate_kasir_invoice(kasir_data, toko_info)
+                            whatsapp_link = create_whatsapp_link(telp_input, invoice_text)
+                            
+                            st.markdown("---")
+                            st.markdown("### 📱 Invoice WhatsApp")
+                            st.success(f"✅ Transaksi berhasil! Kirim invoice ke **{nama_input}**")
+                            st.info(f"🔑 **Kode Review:** `{secret_code}` (Customer dapat memberikan review dengan kode ini)")
+                            st.link_button("💬 Kirim Invoice via WhatsApp", whatsapp_link, use_container_width=True)
+                            
+                            with st.expander("👁️ Preview Invoice"):
+                                st.text(invoice_text)
+                        else:
+                            st.rerun()
+                    else:
+                        st.error("❌ " + msg)
+        else:
+            st.info("ℹ️ Pilih salah satu transaksi dari tabel di atas untuk memproses pembayaran")
     
     with tab2:
-        st.subheader('☕️ Penjualan Coffee Only')
-        st.info("💡 Untuk penjualan coffee/snack tanpa transaksi cuci mobil")
+        # Sub-tabs untuk Coffee Shop
+        coffee_tab1, coffee_tab2 = st.tabs(["📝 Transaksi Coffee", "📜 History Coffee"])
         
-        menu = get_coffee_menu()
-        if not menu:
-            st.info("Belum ada menu coffee. Silakan hubungi Admin untuk menambahkan menu.")
-            return
+        with coffee_tab1:
+            st.subheader('☕️ Penjualan Coffee & Snack')
+            st.info("💡 Untuk penjualan coffee/snack tanpa transaksi cuci mobil")
+            
+            menu = get_coffee_menu()
+            if not menu:
+                st.info("Belum ada menu coffee. Silakan hubungi Admin untuk menambahkan menu.")
+            else:
+                # Input customer info
+                st.markdown("##### 👤 Data Customer (Opsional)")
+                col1, col2 = st.columns(2)
+                with col1:
+                    nama_customer = st.text_input("Nama Customer", placeholder="Nama customer (opsional)", key="coffee_only_customer_name")
+                with col2:
+                    no_telp = st.text_input("No. WhatsApp", placeholder="08xxx atau 628xxx (opsional)", key="coffee_only_customer_wa")
+                
+                st.markdown("---")
+                st.markdown("##### 📋 Menu Coffee & Snack")
 
-        # Input customer info
-        st.markdown("##### 👤 Data Customer (Opsional)")
-        col1, col2 = st.columns(2)
-        with col1:
-            nama_customer = st.text_input("Nama Customer", placeholder="Nama customer (opsional)", key="coffee_only_customer_name")
-        with col2:
-            no_telp = st.text_input("No. WhatsApp", placeholder="08xxx atau 628xxx (opsional)", key="coffee_only_customer_wa")
-        
-        st.markdown("---")
-        st.markdown("##### 📋 Menu Coffee & Snack")
+                # Build order form
+                order = {}
+                for idx, (name, price) in enumerate(menu.items()):
+                    c1, c2 = st.columns([3,1])
+                    with c1:
+                        st.write(f"**{name}** - Rp {price:,.0f}")
+                    with c2:
+                        qty = st.number_input(f"Qty", min_value=0, value=0, key=f"coffee_only_qty_{idx}", label_visibility="collapsed")
+                    if qty and qty > 0:
+                        order[name] = { 'price': price, 'qty': int(qty), 'subtotal': price * int(qty) }
 
-        # Build order form
-        order = {}
-        for idx, (name, price) in enumerate(menu.items()):
-            c1, c2 = st.columns([3,1])
-            with c1:
-                st.write(f"**{name}** - Rp {price:,.0f}")
-            with c2:
-                qty = st.number_input(f"Qty", min_value=0, value=0, key=f"coffee_only_qty_{idx}", label_visibility="collapsed")
-            if qty and qty > 0:
-                order[name] = { 'price': price, 'qty': int(qty), 'subtotal': price * int(qty) }
+                if order:
+                    st.markdown("---")
+                    st.subheader("🧾 Ringkasan Order")
+                    df_order = pd.DataFrame([{
+                        'Item': k,
+                        'Harga': v['price'],
+                        'Qty': v['qty'],
+                        'Subtotal': v['subtotal']
+                    } for k, v in order.items()])
+                    df_order['Harga'] = df_order['Harga'].apply(lambda x: f"Rp {x:,.0f}")
+                    df_order['Subtotal'] = df_order['Subtotal'].apply(lambda x: f"Rp {x:,.0f}")
+                    st.table(df_order)
 
-        if order:
-            st.markdown("---")
-            st.subheader("🧾 Ringkasan Order")
-            df_order = pd.DataFrame([{
-                'Item': k,
-                'Harga': v['price'],
-                'Qty': v['qty'],
-                'Subtotal': v['subtotal']
-            } for k, v in order.items()])
-            df_order['Harga'] = df_order['Harga'].apply(lambda x: f"Rp {x:,.0f}")
-            df_order['Subtotal'] = df_order['Subtotal'].apply(lambda x: f"Rp {x:,.0f}")
-            st.table(df_order)
+                    total = sum(v['subtotal'] for v in order.values())
+                    st.success(f"💰 **Total: Rp {total:,.0f}**")
 
-            total = sum(v['subtotal'] for v in order.values())
-            st.success(f"💰 **Total: Rp {total:,.0f}**")
+                    col1, col2, col3 = st.columns([2, 1, 2])
+                    with col2:
+                        save_btn = st.button("💾 Simpan Penjualan", type="primary", use_container_width=True, key="save_coffee_only_sale")
 
-            col1, col2, col3 = st.columns([2, 1, 2])
-            with col2:
-                save_btn = st.button("💾 Simpan Penjualan", type="primary", use_container_width=True, key="save_coffee_only_sale")
-
-            if save_btn:
-                now_wib = datetime.now(WIB)
-                trans = {
-                    'items': [{'name': k, 'price': v['price'], 'qty': v['qty']} for k, v in order.items()],
-                    'total': total,
-                    'tanggal': now_wib.strftime('%d-%m-%Y'),
-                    'waktu': now_wib.strftime('%H:%M:%S'),
-                    'nama_customer': nama_customer,
-                    'no_telp': no_telp,
-                    'created_by': st.session_state.get('login_user', '')
-                }
-                success, msg = save_coffee_sale(trans)
-                if success:
-                    st.success(msg)
-                    add_audit('coffee_sale', f"Penjualan coffee total Rp {total:,.0f}")
-                    
-                    # Generate WhatsApp invoice if phone number is provided
-                    if no_telp:
-                        toko_info = get_toko_info()
-                        invoice_text = generate_coffee_invoice(trans, toko_info)
-                        whatsapp_link = create_whatsapp_link(no_telp, invoice_text)
-                        
-                        st.markdown("---")
-                        st.markdown("### 📱 Invoice WhatsApp")
-                        st.markdown(f"**Customer:** {nama_customer if nama_customer else 'Walk-in Customer'}")
-                        st.link_button("💬 Kirim Invoice via WhatsApp", whatsapp_link, use_container_width=True)
-                        
-                        with st.expander("👁️ Preview Invoice"):
-                            st.text(invoice_text)
-                    else:
-                        st.rerun()
+                    if save_btn:
+                        now_wib = datetime.now(WIB)
+                        trans = {
+                            'items': [{'name': k, 'price': v['price'], 'qty': v['qty']} for k, v in order.items()],
+                            'total': total,
+                            'tanggal': now_wib.strftime('%d-%m-%Y'),
+                            'waktu': now_wib.strftime('%H:%M:%S'),
+                            'nama_customer': nama_customer,
+                            'no_telp': no_telp,
+                            'created_by': st.session_state.get('login_user', '')
+                        }
+                        success, msg = save_coffee_sale(trans)
+                        if success:
+                            st.success(msg)
+                            add_audit('coffee_sale', f"Penjualan coffee total Rp {total:,.0f}")
+                            
+                            # Generate WhatsApp invoice if phone number is provided
+                            if no_telp:
+                                toko_info = get_toko_info()
+                                invoice_text = generate_coffee_invoice(trans, toko_info)
+                                whatsapp_link = create_whatsapp_link(no_telp, invoice_text)
+                                
+                                st.markdown("---")
+                                st.markdown("### 📱 Invoice WhatsApp")
+                                st.markdown(f"**Customer:** {nama_customer if nama_customer else 'Walk-in Customer'}")
+                                st.link_button("💬 Kirim Invoice via WhatsApp", whatsapp_link, use_container_width=True)
+                                
+                                with st.expander("👁️ Preview Invoice"):
+                                    st.text(invoice_text)
+                            else:
+                                st.rerun()
+                        else:
+                            st.error(msg)
                 else:
-                    st.error(msg)
-        else:
-            st.info("📭 Belum ada item dipilih untuk dipesan. Silakan pilih menu dan masukkan jumlah.")
+                    st.info("📭 Belum ada item dipilih untuk dipesan. Silakan pilih menu dan masukkan jumlah.")
+        
+        with coffee_tab2:
+            st.subheader('📜 History Penjualan Coffee')
+            st.info("💡 Riwayat penjualan coffee/snack tanpa transaksi cuci mobil")
+            
+            df_sales = get_all_coffee_sales()
+            if df_sales.empty:
+                st.info('📭 Belum ada penjualan coffee tersimpan')
+            else:
+                # Filter pencarian
+                col1, col2, col3 = st.columns([2, 2, 1])
+                with col1:
+                    search_date = st.text_input("🔍 Cari Tanggal", placeholder="dd-mm-yyyy", key="search_coffee_date")
+                with col2:
+                    search_kasir = st.text_input("🔍 Cari Kasir", key="search_coffee_kasir")
+                
+                # Apply filter
+                if search_date:
+                    df_sales = df_sales[df_sales['tanggal'].str.contains(search_date, case=False, na=False)]
+                if search_kasir:
+                    df_sales = df_sales[df_sales['created_by'].str.contains(search_kasir, case=False, na=False)]
+                
+                if not df_sales.empty:
+                    st.success(f"📊 **{len(df_sales)} transaksi** ditemukan")
+                    
+                    # parse items for display
+                    def items_str(js):
+                        try:
+                            arr = json.loads(js)
+                            return '\n'.join([f"{i['qty']}x {i['name']} (Rp {i['price']:,.0f})" for i in arr])
+                        except:
+                            return js
+
+                    df_sales['Items Detail'] = df_sales['items'].apply(items_str)
+                    df_disp = df_sales[['tanggal', 'waktu', 'Items Detail', 'total', 'created_by']].copy()
+                    df_disp.columns = ['📅 Tanggal', '⏰ Waktu', '☕️ Items', '💰 Total', '👤 Kasir']
+                    df_disp['💰 Total'] = df_disp['💰 Total'].apply(lambda x: f"Rp {x:,.0f}")
+                    
+                    st.dataframe(df_disp, use_container_width=True, hide_index=True)
+                    
+                    # Statistik ringkas
+                    st.markdown("---")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        total_penjualan = df_sales['total'].sum()
+                        st.metric("💰 Total Penjualan", f"Rp {total_penjualan:,.0f}")
+                    with col2:
+                        st.metric("📊 Jumlah Transaksi", len(df_sales))
+                    with col3:
+                        avg_transaksi = total_penjualan / len(df_sales) if len(df_sales) > 0 else 0
+                        st.metric("📈 Rata-rata", f"Rp {avg_transaksi:,.0f}")
+                else:
+                    st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
     
     with tab3:
         st.subheader('📜 History Transaksi Kasir')
@@ -2463,59 +2970,6 @@ def kasir_page(role):
                 st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
     
     with tab4:
-        st.subheader('📜 History Penjualan Coffee Only')
-        st.info("💡 Riwayat penjualan coffee/snack tanpa transaksi cuci mobil")
-        
-        df_sales = get_all_coffee_sales()
-        if df_sales.empty:
-            st.info('📭 Belum ada penjualan coffee tersimpan')
-        else:
-            # Filter pencarian
-            col1, col2, col3 = st.columns([2, 2, 1])
-            with col1:
-                search_date = st.text_input("🔍 Cari Tanggal", placeholder="dd-mm-yyyy", key="search_coffee_date")
-            with col2:
-                search_kasir = st.text_input("🔍 Cari Kasir", key="search_coffee_kasir")
-            
-            # Apply filter
-            if search_date:
-                df_sales = df_sales[df_sales['tanggal'].str.contains(search_date, case=False, na=False)]
-            if search_kasir:
-                df_sales = df_sales[df_sales['created_by'].str.contains(search_kasir, case=False, na=False)]
-            
-            if not df_sales.empty:
-                st.success(f"📊 **{len(df_sales)} transaksi** ditemukan")
-                
-                # parse items for display
-                def items_str(js):
-                    try:
-                        arr = json.loads(js)
-                        return '\n'.join([f"{i['qty']}x {i['name']} (Rp {i['price']:,.0f})" for i in arr])
-                    except:
-                        return js
-
-                df_sales['Items Detail'] = df_sales['items'].apply(items_str)
-                df_disp = df_sales[['tanggal', 'waktu', 'Items Detail', 'total', 'created_by']].copy()
-                df_disp.columns = ['📅 Tanggal', '⏰ Waktu', '☕️ Items', '💰 Total', '👤 Kasir']
-                df_disp['💰 Total'] = df_disp['💰 Total'].apply(lambda x: f"Rp {x:,.0f}")
-                
-                st.dataframe(df_disp, use_container_width=True, hide_index=True)
-                
-                # Statistik ringkas
-                st.markdown("---")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    total_penjualan = df_sales['total'].sum()
-                    st.metric("💰 Total Penjualan", f"Rp {total_penjualan:,.0f}")
-                with col2:
-                    st.metric("📊 Jumlah Transaksi", len(df_sales))
-                with col3:
-                    avg_transaksi = total_penjualan / len(df_sales) if len(df_sales) > 0 else 0
-                    st.metric("📈 Rata-rata", f"Rp {avg_transaksi:,.0f}")
-            else:
-                st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
-    
-    with tab5:
         st.subheader("⚙️ Kelola Menu Coffee Shop")
         
         # Check role
@@ -3504,6 +3958,222 @@ def user_setting_page():
             else:
                 st.info("ℹ️ Tidak ada perubahan.")
 
+def review_customer_page():
+    st.markdown("""
+    <style>
+    .review-header {
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        color: white;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 15px rgba(240, 147, 251, 0.3);
+    }
+    .review-detail-card {
+        background: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 12px;
+        border-left: 4px solid #f093fb;
+        margin-top: 1rem;
+    }
+    .star-display {
+        color: #ffd700;
+        font-size: 1.5rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('<div class="review-header"><h2 style="margin:0;">⭐ Customer Reviews & Rewards</h2><p style="margin:0.5rem 0 0 0; opacity:0.9;">Evaluasi pelayanan dan manajemen poin customer</p></div>', unsafe_allow_html=True)
+    
+    tab1, tab2, tab3 = st.tabs(["📝 Semua Review", "🎁 Customer Points", "📊 Statistik"])
+    
+    with tab1:
+        st.subheader("📝 Daftar Review Customer")
+        
+        df_reviews = get_all_reviews()
+        
+        if df_reviews.empty:
+            st.info("📭 Belum ada review dari customer")
+        else:
+            # Filter
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                search_name = st.text_input("🔍 Cari Nama Customer", key="search_review_name")
+            with col2:
+                filter_rating = st.selectbox("⭐ Filter Rating", ["Semua", "5", "4", "3", "2", "1"], key="filter_rating")
+            
+            # Apply filter
+            df_filtered = df_reviews.copy()
+            if search_name:
+                df_filtered = df_filtered[df_filtered['nama_customer'].str.contains(search_name, case=False, na=False)]
+            if filter_rating != "Semua":
+                df_filtered = df_filtered[df_filtered['rating'] == int(filter_rating)]
+            
+            if not df_filtered.empty:
+                st.success(f"📊 **{len(df_filtered)} review** ditemukan")
+                
+                # Prepare data for table
+                df_display = df_filtered.copy()
+                df_display['⭐ Rating'] = df_display['rating'].apply(lambda x: "⭐" * x)
+                df_display['👤 Customer'] = df_display['nama_customer']
+                df_display['🚗 Nopol'] = df_display['nopol'].apply(lambda x: x if x else 'Coffee Only')
+                df_display['📅 Tanggal'] = df_display['review_date']
+                df_display['⏰ Waktu'] = df_display['review_time']
+                df_display['🎁 Poin'] = df_display['reward_points']
+                
+                # Add selection column
+                df_display.insert(0, '📋', False)
+                
+                # Display editable table with selection
+                edited_df = st.data_editor(
+                    df_display[['📋', '👤 Customer', '🚗 Nopol', '⭐ Rating', '📅 Tanggal', '⏰ Waktu', '🎁 Poin']],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "📋": st.column_config.CheckboxColumn(
+                            "Pilih",
+                            help="Pilih untuk melihat detail review",
+                            default=False,
+                        )
+                    },
+                    disabled=['👤 Customer', '🚗 Nopol', '⭐ Rating', '📅 Tanggal', '⏰ Waktu', '🎁 Poin'],
+                    key="review_table"
+                )
+                
+                # Show detail of selected review
+                selected_rows = edited_df[edited_df['📋'] == True]
+                
+                if not selected_rows.empty:
+                    st.markdown("---")
+                    st.markdown("### 📖 Detail Review yang Dipilih")
+                    
+                    for idx, row in selected_rows.iterrows():
+                        # Get original review data
+                        original_idx = df_display[
+                            (df_display['👤 Customer'] == row['👤 Customer']) & 
+                            (df_display['📅 Tanggal'] == row['📅 Tanggal']) &
+                            (df_display['⏰ Waktu'] == row['⏰ Waktu'])
+                        ].index[0]
+                        
+                        review_data = df_filtered.loc[original_idx]
+                        
+                        with st.container():
+                            st.markdown('<div class="review-detail-card">', unsafe_allow_html=True)
+                            
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.markdown(f"**👤 Customer:** {review_data['nama_customer']}")
+                                st.markdown(f"**🚗 Nopol:** {review_data['nopol'] if review_data['nopol'] else 'Coffee Only'}")
+                                st.markdown(f"**📅 Tanggal:** {review_data['review_date']} {review_data['review_time']}")
+                            with col2:
+                                st.markdown(f'<div class="star-display" style="text-align:center;">{"⭐" * review_data["rating"]}<br>({review_data["rating"]}/5)</div>', unsafe_allow_html=True)
+                                st.markdown(f"<div style='text-align:center; margin-top:0.5rem;'>🎁 **+{review_data['reward_points']} poin**</div>", unsafe_allow_html=True)
+                            
+                            st.markdown("---")
+                            st.markdown("**💬 Review:**")
+                            st.info(review_data['review_text'])
+                            
+                            st.markdown('</div>', unsafe_allow_html=True)
+                            st.markdown("<br>", unsafe_allow_html=True)
+                
+                # Statistik singkat
+                st.markdown("---")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    avg_rating = df_filtered['rating'].mean()
+                    st.metric("📊 Rata-rata Rating", f"{avg_rating:.2f} ⭐")
+                with col2:
+                    rating_5 = len(df_filtered[df_filtered['rating'] == 5])
+                    st.metric("⭐⭐⭐⭐⭐", rating_5)
+                with col3:
+                    rating_4 = len(df_filtered[df_filtered['rating'] == 4])
+                    st.metric("⭐⭐⭐⭐", rating_4)
+                with col4:
+                    total_reviews = len(df_filtered)
+                    st.metric("📝 Total Review", total_reviews)
+            else:
+                st.warning("⚠️ Tidak ada review yang sesuai filter")
+    
+    with tab2:
+        st.subheader("🎁 Customer Reward Points")
+        
+        df_points = get_all_customer_points()
+        
+        if df_points.empty:
+            st.info("📭 Belum ada customer yang mengumpulkan poin")
+        else:
+            st.success(f"👥 **{len(df_points)} customer** memiliki poin reward")
+            
+            # Display points leaderboard
+            df_display = df_points[['nama_customer', 'nopol', 'no_telp', 'total_points', 'last_updated']].copy()
+            df_display.columns = ['👤 Nama', '🚗 Nopol', '📱 Telp', '🎁 Total Poin', '📅 Update Terakhir']
+            
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            
+            # Statistik
+            st.markdown("---")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                total_points_given = df_points['total_points'].sum()
+                st.metric("🎁 Total Poin Diberikan", total_points_given)
+            with col2:
+                avg_points = df_points['total_points'].mean()
+                st.metric("📊 Rata-rata Poin/Customer", f"{avg_points:.1f}")
+            with col3:
+                top_customer = df_points.iloc[0] if not df_points.empty else None
+                if top_customer is not None:
+                    st.metric("🏆 Top Customer", f"{top_customer['nama_customer'][:15]}...")
+    
+    with tab3:
+        st.subheader("📊 Statistik Review")
+        
+        df_reviews = get_all_reviews()
+        
+        if not df_reviews.empty:
+            # Rating distribution
+            st.markdown("#### ⭐ Distribusi Rating")
+            rating_counts = df_reviews['rating'].value_counts().sort_index(ascending=False)
+            
+            for rating in [5, 4, 3, 2, 1]:
+                count = rating_counts.get(rating, 0)
+                percentage = (count / len(df_reviews) * 100) if len(df_reviews) > 0 else 0
+                col1, col2, col3 = st.columns([1, 3, 1])
+                with col1:
+                    st.write(f"{'⭐' * rating}")
+                with col2:
+                    st.progress(percentage / 100)
+                with col3:
+                    st.write(f"{count} ({percentage:.1f}%)")
+            
+            # Review trend by date
+            st.markdown("---")
+            st.markdown("#### 📈 Trend Review")
+            
+            df_reviews['review_date_parsed'] = pd.to_datetime(df_reviews['review_date'], format='%d-%m-%Y', errors='coerce')
+            reviews_by_date = df_reviews.groupby(df_reviews['review_date_parsed'].dt.date).size().reset_index()
+            reviews_by_date.columns = ['Tanggal', 'Jumlah Review']
+            
+            if not reviews_by_date.empty:
+                st.line_chart(reviews_by_date.set_index('Tanggal'))
+            
+            # Summary metrics
+            st.markdown("---")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("📝 Total Review", len(df_reviews))
+            with col2:
+                avg_rating = df_reviews['rating'].mean()
+                st.metric("⭐ Rating Rata-rata", f"{avg_rating:.2f}")
+            with col3:
+                positive_reviews = len(df_reviews[df_reviews['rating'] >= 4])
+                positive_pct = (positive_reviews / len(df_reviews) * 100)
+                st.metric("👍 Review Positif", f"{positive_pct:.1f}%")
+            with col4:
+                total_points_given = len(df_reviews) * 10
+                st.metric("🎁 Total Poin Diberikan", total_points_given)
+        else:
+            st.info("📭 Belum ada data review untuk ditampilkan")
+
 def main():
     st.set_page_config(page_title="TIME AUTOCARE - Detailing & Ceramic Coating", layout="wide", page_icon="🚗")
     
@@ -3553,7 +4223,7 @@ def main():
         margin: 1.5rem 0 0.8rem 0;
         padding-left: 0.3rem;
     }
-    .stButton > button {
+    [data-testid="stSidebar"] .stButton > button {
         width: 100%;
         padding: 0.85rem 1rem;
         margin-bottom: 0.5rem;
@@ -3567,20 +4237,19 @@ def main():
         text-align: left;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    .stButton > button:hover {
+    [data-testid="stSidebar"] .stButton > button:hover {
         background: #f8f9fa;
         border-color: #667eea;
-        transform: translateX(4px);
         box-shadow: 0 4px 12px rgba(102, 126, 234, 0.15);
     }
-    .stButton > button[kind="secondary"] {
+    [data-testid="stSidebar"] .stButton > button[kind="secondary"] {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
         border-color: #667eea !important;
         color: white !important;
         font-weight: 600 !important;
         box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3) !important;
     }
-    .logout-btn > button {
+    [data-testid="stSidebar"] .logout-btn > button {
         background: #ff6b6b !important;
         border: none !important;
         color: white !important;
@@ -3588,9 +4257,8 @@ def main():
         margin-top: 1.5rem !important;
         box-shadow: 0 4px 12px rgba(255, 107, 107, 0.3) !important;
     }
-    .logout-btn > button:hover {
+    [data-testid="stSidebar"] .logout-btn > button:hover {
         background: #ff5252 !important;
-        transform: translateY(-2px) !important;
         box-shadow: 0 6px 20px rgba(255, 107, 107, 0.4) !important;
     }
     </style>
@@ -3613,6 +4281,7 @@ def main():
         ("Cuci Mobil", "🚗"),
         ("Kasir", "💰"),
         ("Customer", "👥"),
+        ("Review Customer", "⭐"),
         ("Laporan", "📊"),
         ("Setting Toko", "⚙️"),
         ("Audit Trail", "📜"),
@@ -3650,6 +4319,8 @@ def main():
         laporan_page(role)
     elif menu == "Setting Toko":
         setting_toko_page(role)
+    elif menu == "Review Customer":
+        review_customer_page()
     elif menu == "User Setting":
         user_setting_page()
     elif menu == "Audit Trail":
