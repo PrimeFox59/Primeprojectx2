@@ -1435,21 +1435,10 @@ def dashboard_page(role):
     if 'dashboard_date_filter' not in st.session_state:
         st.session_state.dashboard_date_filter = (today, today)
     
-    col1, col2, col3 = st.columns([2, 1, 1])
-    with col1:
-        date_filter = st.date_input("📅 Filter Periode", value=st.session_state.dashboard_date_filter, key="dashboard_date_input")
-        # Update session state when user changes date input
-        if date_filter != st.session_state.dashboard_date_filter:
-            st.session_state.dashboard_date_filter = date_filter
-    with col2:
-        if st.button("📊 Hari Ini", use_container_width=True, key="btn_today"):
-            st.session_state.dashboard_date_filter = (today, today)
-            st.rerun()
-    with col3:
-        if st.button("📅 Bulan Ini", use_container_width=True, key="btn_month"):
-            first_day = today.replace(day=1)
-            st.session_state.dashboard_date_filter = (first_day, today)
-            st.rerun()
+    date_filter = st.date_input("📅 Filter Periode", value=st.session_state.dashboard_date_filter, key="dashboard_date_input")
+    # Update session state when user changes date input
+    if date_filter != st.session_state.dashboard_date_filter:
+        st.session_state.dashboard_date_filter = date_filter
     
     # Apply filter
     if isinstance(date_filter, (list, tuple)) and len(date_filter) == 2:
