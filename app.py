@@ -1814,7 +1814,7 @@ def transaksi_page(role):
         cols = st.columns(3)
         for idx, item in enumerate(checklist_items):
             with cols[idx % 3]:
-                if st.checkbox(item, key=f"check_{idx}", value=True):
+                if st.checkbox(item, key=f"check_{idx}", value=False):
                     selected_checks.append(item)
         
         # QC Barang dalam mobil
