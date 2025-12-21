@@ -5816,6 +5816,8 @@ def payroll_page(role):
                         st.rerun()
                 else:
                     st.warning("⚠️ Belum ada karyawan aktif")
+                    # Submit button required even when no employees
+                    st.form_submit_button("🧮 Hitung Gaji", use_container_width=True, disabled=True)
         
         with col2:
             st.markdown("#### 📋 Hasil Perhitungan")
