@@ -727,6 +727,106 @@ def delete_employee(emp_id):
     conn.commit()
     conn.close()
 
+def update_customer(nopol, nama, telp, jenis_kendaraan='', merk_kendaraan='', ukuran_mobil=''):
+    """Update customer data"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        c.execute("""
+            UPDATE customers 
+            SET nama_customer=?, no_telp=?, jenis_kendaraan=?, merk_kendaraan=?, ukuran_mobil=?
+            WHERE nopol=?
+        """, (nama, telp, jenis_kendaraan, merk_kendaraan, ukuran_mobil, nopol.upper()))
+        conn.commit()
+        return True, "Customer berhasil diupdate"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def delete_customer(nopol):
+    """Delete customer"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        # Check if customer has transactions
+        c.execute("SELECT COUNT(*) FROM wash_transactions WHERE nopol=?", (nopol.upper(),))
+        trans_count = c.fetchone()[0]
+        
+        if trans_count > 0:
+            return False, f"Tidak dapat menghapus customer. Ada {trans_count} transaksi terkait."
+        
+        c.execute("DELETE FROM customers WHERE nopol=?", (nopol.upper(),))
+        conn.commit()
+        return True, "Customer berhasil dihapus"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def delete_wash_transaction(trans_id):
+    """Delete wash transaction"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        # Check if already in kasir
+        c.execute("SELECT COUNT(*) FROM kasir_transactions WHERE wash_trans_id=?", (trans_id,))
+        kasir_count = c.fetchone()[0]
+        
+        if kasir_count > 0:
+            return False, "Tidak dapat menghapus transaksi yang sudah masuk kasir."
+        
+        c.execute("DELETE FROM wash_transactions WHERE id=?", (trans_id,))
+        conn.commit()
+        return True, "Transaksi berhasil dihapus"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def update_wash_transaction(trans_id, paket_cuci, harga, catatan):
+    """Update wash transaction"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        c.execute("""
+            UPDATE wash_transactions 
+            SET paket_cuci=?, harga=?, catatan=?
+            WHERE id=?
+        """, (paket_cuci, harga, catatan, trans_id))
+        conn.commit()
+        return True, "Transaksi berhasil diupdate"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def delete_kasir_transaction(trans_id):
+    """Delete kasir transaction"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM kasir_transactions WHERE id=?", (trans_id,))
+        conn.commit()
+        return True, "Transaksi kasir berhasil dihapus"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def delete_attendance(attendance_id):
+    """Delete attendance record"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM attendance WHERE id=?", (attendance_id,))
+        conn.commit()
+        return True, "Presensi berhasil dihapus"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
 def get_shift_settings():
     """Get shift settings"""
     conn = sqlite3.connect('car_wash.db')
@@ -2257,10 +2357,11 @@ def transaksi_page(role):
     jumlah_proses = len(df_all[df_all['status'] == 'Dalam Proses'])
     jumlah_selesai = len(df_all[df_all['status'] == 'Selesai'])
     
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📝 Transaksi Baru", 
         f"✅ Selesaikan Transaksi ({jumlah_proses})",
         f"📚 History Customer ({jumlah_selesai})",
+        "✏️ Edit/Hapus Transaksi",
         "⚙️ Setting Paket Cuci"
     ])
     
@@ -3010,250 +3111,332 @@ Terima kasih atas kepercayaan Anda! 🙏
                 st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
     
     with tab4:
-        st.subheader("⚙️ Setting Paket Cuci & Checklist")
+        st.markdown("""
+        <div style="margin-bottom: 0.5rem;">
+            <h4 style="margin: 0; color: #2d3436; font-size: 1.1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">✏️ Edit / Hapus Transaksi Cuci Mobil</h4>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        df_all_trans = get_all_transactions()
+        
+        if df_all_trans.empty:
+            st.info("📭 Belum ada transaksi untuk diedit atau dihapus")
+        else:
+            st.warning("⚠️ Hanya dapat mengedit/menghapus transaksi yang belum masuk kasir")
+            
+            # Filter only transactions not in kasir
+            df_editable = df_all_trans.copy()
+            
+            # Select transaction
+            trans_options = {}
+            for _, row in df_editable.iterrows():
+                label = f"ID:{row['id']} | {row['tanggal']} | {row['nopol']} - {row['nama_customer']} | {row['paket_cuci']} | {row['status']}"
+                trans_options[label] = row
+            
+            if trans_options:
+                selected_trans = st.selectbox("Pilih Transaksi", list(trans_options.keys()), key="select_trans_edit")
+                
+                if selected_trans:
+                    trans_data = trans_options[selected_trans]
+                    
+                    col_edit, col_delete = st.columns([3, 1])
+                    
+                    with col_edit:
+                        st.markdown("#### ✏️ Edit Transaksi")
+                        with st.form("edit_trans_form"):
+                            st.info(f"📝 Edit transaksi ID: **{trans_data['id']}** - Nopol: **{trans_data['nopol']}**")
+                            
+                            # Get current paket options
+                            paket_cucian = get_paket_cucian()
+                            paket_list = list(paket_cucian.keys())
+                            current_paket_idx = paket_list.index(trans_data['paket_cuci']) if trans_data['paket_cuci'] in paket_list else 0
+                            
+                            edit_paket = st.selectbox("Paket Cuci *", options=paket_list, index=current_paket_idx)
+                            edit_harga = st.number_input("Harga (Rp) *", value=int(trans_data['harga']), min_value=0, step=10000)
+                            edit_catatan = st.text_area("Catatan", value=trans_data['catatan'] or "")
+                            
+                            col_btn1, col_btn2 = st.columns(2)
+                            with col_btn1:
+                                submit_edit = st.form_submit_button("💾 Update Transaksi", type="primary", use_container_width=True)
+                            with col_btn2:
+                                cancel = st.form_submit_button("❌ Batal", use_container_width=True)
+                            
+                            if submit_edit:
+                                success, msg = update_wash_transaction(
+                                    trans_data['id'], edit_paket, edit_harga, edit_catatan
+                                )
+                                if success:
+                                    add_audit("update_wash_trans", f"Update transaksi ID:{trans_data['id']} - {trans_data['nopol']}")
+                                    st.success(f"✅ {msg}")
+                                    st.balloons()
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+                    
+                    with col_delete:
+                        st.markdown("#### 🗑️ Hapus Transaksi")
+                        st.warning("⚠️ Aksi ini tidak dapat dibatalkan!")
+                        
+                        if st.button("🗑️ Hapus Transaksi", type="primary", use_container_width=True, key="delete_trans_btn"):
+                            success, msg = delete_wash_transaction(trans_data['id'])
+                            if success:
+                                add_audit("delete_wash_trans", f"Hapus transaksi ID:{trans_data['id']} - {trans_data['nopol']}")
+                                st.success(f"✅ {msg}")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {msg}")
+            else:
+                st.info("📭 Semua transaksi sudah masuk kasir. Tidak ada yang bisa diedit.")
+    
+    with tab5:
+        # Setting Paket Cuci
+        st.markdown("""
+        <div style="margin-bottom: 0.5rem;">
+            <h4 style="margin: 0; color: #2d3436; font-size: 1.1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">⚙️ Pengaturan Paket Cuci & Checklist</h4>
+        </div>
+        """, unsafe_allow_html=True)
         
         # Check role
         if role not in ["Admin", "Supervisor"]:
             st.warning("⚠️ Hanya Admin dan Supervisor yang dapat mengakses setting ini")
-            return
-        
-        subtab1, subtab2, subtab3, subtab4 = st.tabs(["📦 Paket Cuci", "🚗 Multiplier Ukuran", "✅ Checklist Datang", "✓ Checklist Selesai"])
-        
-        with subtab1:
-            st.markdown("##### 📦 Kelola Paket Cucian")
+        else:
+            subtab1, subtab2, subtab3, subtab4 = st.tabs(["📦 Paket Cuci", "🚗 Multiplier Ukuran", "✅ Checklist Datang", "✓ Checklist Selesai"])
             
-            # Load paket cucian
-            paket_cucian = get_paket_cucian()
-            
-            st.info("ℹ️ Tambah, edit, atau hapus paket cucian yang tersedia")
-            
-            # Tampilkan paket yang ada
-            st.markdown("**Paket Cucian Saat Ini:**")
-            menu_updated = paket_cucian.copy()
-            
-            for idx, (nama, harga) in enumerate(paket_cucian.items()):
-                col1, col2, col3 = st.columns([3, 2, 1])
-                with col1:
-                    new_nama = st.text_input("Nama Paket", value=nama, key=f"paket_nama_{idx}", label_visibility="collapsed")
-                with col2:
-                    new_harga = st.number_input("Harga", value=int(harga), min_value=0, step=5000, key=f"paket_harga_{idx}", label_visibility="collapsed")
-                with col3:
-                    if st.button("🗑️", key=f"del_paket_{idx}", help="Hapus paket ini"):
-                        del menu_updated[nama]
-                        success, msg = update_setting("paket_cucian", menu_updated)
-                        if success:
-                            st.success(f"✅ {nama} berhasil dihapus")
-                            add_audit("paket_delete", f"Hapus paket: {nama}")
-                            st.rerun()
-                        else:
-                            st.error(msg)
+            with subtab1:
+                st.markdown("##### 📦 Kelola Paket Cucian")
                 
-                # Update jika berubah
-                if new_nama != nama or new_harga != harga:
-                    if new_nama and new_harga > 0:
-                        if nama in menu_updated:
+                # Load paket cucian
+                paket_cucian = get_paket_cucian()
+                
+                st.info("ℹ️ Tambah, edit, atau hapus paket cucian yang tersedia")
+                
+                # Tampilkan paket yang ada
+                st.markdown("**Paket Cucian Saat Ini:**")
+                menu_updated = paket_cucian.copy()
+                
+                for idx, (nama, harga) in enumerate(paket_cucian.items()):
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    with col1:
+                        new_nama = st.text_input("Nama Paket", value=nama, key=f"paket_nama_{idx}", label_visibility="collapsed")
+                    with col2:
+                        new_harga = st.number_input("Harga", value=int(harga), min_value=0, step=5000, key=f"paket_harga_{idx}", label_visibility="collapsed")
+                    with col3:
+                        if st.button("🗑️", key=f"del_paket_{idx}", help="Hapus paket ini"):
                             del menu_updated[nama]
-                        menu_updated[new_nama] = new_harga
-            
-            st.markdown("---")
-            
-            # Tambah paket baru
-            st.markdown("**➕ Tambah Paket Baru:**")
-            col1, col2, col3 = st.columns([3, 2, 1])
-            with col1:
-                nama_baru = st.text_input("Nama Paket Baru", key="new_paket_nama", placeholder="Contoh: Cuci Express")
-            with col2:
-                harga_baru = st.number_input("Harga", value=50000, min_value=0, step=5000, key="new_paket_harga")
-            with col3:
-                if st.button("➕ Tambah", key="add_paket"):
-                    if nama_baru and harga_baru > 0:
-                        if nama_baru in menu_updated:
-                            st.error(f"❌ Paket '{nama_baru}' sudah ada!")
-                        else:
-                            menu_updated[nama_baru] = harga_baru
                             success, msg = update_setting("paket_cucian", menu_updated)
                             if success:
-                                st.success(f"✅ Paket '{nama_baru}' berhasil ditambahkan")
-                                add_audit("paket_add", f"Tambah paket: {nama_baru} - Rp {harga_baru:,.0f}")
+                                st.success(f"✅ {nama} berhasil dihapus")
+                                add_audit("paket_delete", f"Hapus paket: {nama}")
                                 st.rerun()
                             else:
                                 st.error(msg)
-                    else:
-                        st.error("❌ Mohon isi nama dan harga paket")
-            
-            st.markdown("---")
-            
-            if st.button("💾 Simpan Semua Perubahan Paket", type="primary", use_container_width=True):
-                success, msg = update_setting("paket_cucian", menu_updated)
-                if success:
-                    st.success("✅ Semua perubahan paket berhasil disimpan!")
-                    add_audit("paket_update", "Update paket cucian")
-                    st.rerun()
-                else:
-                    st.error(msg)
-        
-        with subtab2:
-            st.markdown("##### 🚗 Multiplier Harga Berdasarkan Ukuran Mobil")
-            
-            st.info("ℹ️ Atur multiplier harga untuk setiap ukuran mobil. Harga paket akan dikalikan dengan multiplier ini.")
-            
-            # Load multiplier saat ini
-            multiplier_map = get_ukuran_multiplier()
-            
-            st.markdown("**Multiplier Saat Ini:**")
-            
-            # Form untuk edit multiplier
-            with st.form("multiplier_form"):
-                new_multiplier = {}
-                
-                ukuran_list = ["Kecil", "Sedang", "Besar", "Extra Besar"]
-                
-                for ukuran in ukuran_list:
-                    col1, col2, col3 = st.columns([2, 2, 3])
-                    with col1:
-                        st.markdown(f"**{ukuran}**")
-                    with col2:
-                        current_value = multiplier_map.get(ukuran, 1.0)
-                        new_value = st.number_input(
-                            f"Multiplier {ukuran}",
-                            value=float(current_value),
-                            min_value=0.5,
-                            max_value=5.0,
-                            step=0.1,
-                            key=f"mult_{ukuran}",
-                            label_visibility="collapsed"
-                        )
-                        new_multiplier[ukuran] = new_value
-                    with col3:
-                        # Contoh perhitungan
-                        example_price = 100000
-                        final_price = int(example_price * new_value)
-                        st.caption(f"Contoh: Rp 100.000 → Rp {final_price:,}")
+                    
+                    # Update jika berubah
+                    if new_nama != nama or new_harga != harga:
+                        if new_nama and new_harga > 0:
+                            if nama in menu_updated:
+                                del menu_updated[nama]
+                            menu_updated[new_nama] = new_harga
                 
                 st.markdown("---")
                 
-                col1, col2, col3 = st.columns([1, 2, 1])
+                # Tambah paket baru
+                st.markdown("**➕ Tambah Paket Baru:**")
+                col1, col2, col3 = st.columns([3, 2, 1])
+                with col1:
+                    nama_baru = st.text_input("Nama Paket Baru", key="new_paket_nama", placeholder="Contoh: Cuci Express")
                 with col2:
-                    submit_multiplier = st.form_submit_button("💾 Simpan Multiplier", type="primary", use_container_width=True)
+                    harga_baru = st.number_input("Harga", value=50000, min_value=0, step=5000, key="new_paket_harga")
+                with col3:
+                    if st.button("➕ Tambah", key="add_paket"):
+                        if nama_baru and harga_baru > 0:
+                            if nama_baru in menu_updated:
+                                st.error(f"❌ Paket '{nama_baru}' sudah ada!")
+                            else:
+                                menu_updated[nama_baru] = harga_baru
+                                success, msg = update_setting("paket_cucian", menu_updated)
+                                if success:
+                                    st.success(f"✅ Paket '{nama_baru}' berhasil ditambahkan")
+                                    add_audit("paket_add", f"Tambah paket: {nama_baru} - Rp {harga_baru:,.0f}")
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+                        else:
+                            st.error("❌ Mohon isi nama dan harga paket")
                 
-                if submit_multiplier:
-                    success, msg = update_setting("ukuran_multiplier", new_multiplier)
+                st.markdown("---")
+                
+                if st.button("💾 Simpan Semua Perubahan Paket", type="primary", use_container_width=True):
+                    success, msg = update_setting("paket_cucian", menu_updated)
                     if success:
-                        st.success("✅ Multiplier berhasil disimpan!")
-                        add_audit("multiplier_update", f"Update multiplier ukuran mobil")
-                        st.balloons()
+                        st.success("✅ Semua perubahan paket berhasil disimpan!")
+                        add_audit("paket_update", "Update paket cucian")
                         st.rerun()
                     else:
-                        st.error(f"❌ {msg}")
+                        st.error(msg)
             
-            # Info tambahan
-            st.markdown("---")
-            st.markdown("**ℹ️ Cara Kerja:**")
-            st.write("- Multiplier akan mengalikan harga paket dasar dengan nilai yang ditentukan")
-            st.write("- Contoh: Paket Rp 50.000 dengan multiplier 1.5 = Rp 75.000")
-            st.write("- Multiplier 1.0 = harga tetap (tidak ada tambahan)")
-        
-        with subtab3:
-            st.markdown("##### ✅ Kelola Checklist Mobil Datang")
-            
-            checklist_datang = get_checklist_datang()
-            
-            st.info("ℹ️ Checklist untuk memeriksa kondisi mobil saat pertama datang")
-            
-            # Tampilkan checklist yang ada
-            new_checklist = []
-            for idx, item in enumerate(checklist_datang):
-                col1, col2 = st.columns([5, 1])
-                with col1:
-                    new_item = st.text_input(f"Item {idx+1}", value=item, key=f"check_datang_{idx}", label_visibility="collapsed")
-                    if new_item:
-                        new_checklist.append(new_item)
-                with col2:
-                    if st.button("🗑️", key=f"del_check_datang_{idx}", help="Hapus item"):
-                        pass  # Item akan terhapus karena tidak masuk new_checklist
-            
-            st.markdown("---")
-            
-            # Tambah item baru
-            st.markdown("**➕ Tambah Item Baru:**")
-            col1, col2 = st.columns([5, 1])
-            with col1:
-                item_baru = st.text_input("Item Checklist Baru", key="new_check_datang", placeholder="Contoh: Kondisi interior bersih")
-            with col2:
-                if st.button("➕", key="add_check_datang"):
-                    if item_baru:
-                        new_checklist.append(item_baru)
-                        success, msg = update_setting("checklist_datang", new_checklist)
+            with subtab2:
+                st.markdown("##### 🚗 Multiplier Harga Berdasarkan Ukuran Mobil")
+                
+                st.info("ℹ️ Atur multiplier harga untuk setiap ukuran mobil. Harga paket akan dikalikan dengan multiplier ini.")
+                
+                # Load multiplier saat ini
+                multiplier_map = get_ukuran_multiplier()
+                
+                st.markdown("**Multiplier Saat Ini:**")
+                
+                # Form untuk edit multiplier
+                with st.form("multiplier_form"):
+                    new_multiplier = {}
+                    
+                    ukuran_list = ["Kecil", "Sedang", "Besar", "Extra Besar"]
+                    
+                    for ukuran in ukuran_list:
+                        col1, col2, col3 = st.columns([2, 2, 3])
+                        with col1:
+                            st.markdown(f"**{ukuran}**")
+                        with col2:
+                            current_value = multiplier_map.get(ukuran, 1.0)
+                            new_value = st.number_input(
+                                f"Multiplier {ukuran}",
+                                value=float(current_value),
+                                min_value=0.5,
+                                max_value=5.0,
+                                step=0.1,
+                                key=f"mult_{ukuran}",
+                                label_visibility="collapsed"
+                            )
+                            new_multiplier[ukuran] = new_value
+                        with col3:
+                            # Contoh perhitungan
+                            example_price = 100000
+                            final_price = int(example_price * new_value)
+                            st.caption(f"Contoh: Rp 100.000 → Rp {final_price:,}")
+                    
+                    st.markdown("---")
+                    
+                    col1, col2, col3 = st.columns([1, 2, 1])
+                    with col2:
+                        submit_multiplier = st.form_submit_button("💾 Simpan Multiplier", type="primary", use_container_width=True)
+                    
+                    if submit_multiplier:
+                        success, msg = update_setting("ukuran_multiplier", new_multiplier)
                         if success:
-                            st.success(f"✅ Item '{item_baru}' berhasil ditambahkan")
-                            add_audit("checklist_add", f"Tambah checklist datang: {item_baru}")
+                            st.success("✅ Multiplier berhasil disimpan!")
+                            add_audit("multiplier_update", f"Update multiplier ukuran mobil")
+                            st.balloons()
                             st.rerun()
                         else:
-                            st.error(msg)
-                    else:
-                        st.error("❌ Mohon isi item checklist")
+                            st.error(f"❌ {msg}")
+                
+                # Info tambahan
+                st.markdown("---")
+                st.markdown("**ℹ️ Cara Kerja:**")
+                st.write("- Multiplier akan mengalikan harga paket dasar dengan nilai yang ditentukan")
+                st.write("- Contoh: Paket Rp 50.000 dengan multiplier 1.5 = Rp 75.000")
+                st.write("- Multiplier 1.0 = harga tetap (tidak ada tambahan)")
             
-            st.markdown("---")
-            
-            if st.button("💾 Simpan Perubahan Checklist", type="primary", use_container_width=True, key="save_checklist_datang"):
-                success, msg = update_setting("checklist_datang", new_checklist if new_checklist else checklist_datang)
-                if success:
-                    st.success("✅ Checklist datang berhasil disimpan!")
-                    add_audit("checklist_update", "Update checklist datang")
-                    st.rerun()
-                else:
-                    st.error(msg)
-        
-        with subtab4:
-            st.markdown("##### ✓ Kelola Checklist QC Selesai")
-            
-            checklist_selesai = get_checklist_selesai()
-            
-            st.info("ℹ️ Checklist untuk quality control setelah selesai cuci")
-            
-            # Tampilkan checklist yang ada
-            new_checklist_selesai = []
-            for idx, item in enumerate(checklist_selesai):
+            with subtab3:
+                st.markdown("##### ✅ Kelola Checklist Mobil Datang")
+                
+                checklist_datang = get_checklist_datang()
+                
+                st.info("ℹ️ Checklist untuk memeriksa kondisi mobil saat pertama datang")
+                
+                # Tampilkan checklist yang ada
+                new_checklist = []
+                for idx, item in enumerate(checklist_datang):
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        new_item = st.text_input(f"Item {idx+1}", value=item, key=f"check_datang_{idx}", label_visibility="collapsed")
+                        if new_item:
+                            new_checklist.append(new_item)
+                    with col2:
+                        if st.button("🗑️", key=f"del_check_datang_{idx}", help="Hapus item"):
+                            pass  # Item akan terhapus karena tidak masuk new_checklist
+                
+                st.markdown("---")
+                
+                # Tambah item baru
+                st.markdown("**➕ Tambah Item Baru:**")
                 col1, col2 = st.columns([5, 1])
                 with col1:
-                    new_item = st.text_input(f"Item {idx+1}", value=item, key=f"check_selesai_{idx}", label_visibility="collapsed")
-                    if new_item:
-                        new_checklist_selesai.append(new_item)
+                    item_baru = st.text_input("Item Checklist Baru", key="new_check_datang", placeholder="Contoh: Kondisi interior bersih")
                 with col2:
-                    if st.button("🗑️", key=f"del_check_selesai_{idx}", help="Hapus item"):
-                        pass  # Item akan terhapus karena tidak masuk new_checklist_selesai
-            
-            st.markdown("---")
-            
-            # Tambah item baru
-            st.markdown("**➕ Tambah Item Baru:**")
-            col1, col2 = st.columns([5, 1])
-            with col1:
-                item_baru_selesai = st.text_input("Item Checklist Baru", key="new_check_selesai", placeholder="Contoh: Velg mengkilap")
-            with col2:
-                if st.button("➕", key="add_check_selesai"):
-                    if item_baru_selesai:
-                        new_checklist_selesai.append(item_baru_selesai)
-                        success, msg = update_setting("checklist_selesai", new_checklist_selesai)
-                        if success:
-                            st.success(f"✅ Item '{item_baru_selesai}' berhasil ditambahkan")
-                            add_audit("checklist_add", f"Tambah checklist selesai: {item_baru_selesai}")
-                            st.rerun()
+                    if st.button("➕", key="add_check_datang"):
+                        if item_baru:
+                            new_checklist.append(item_baru)
+                            success, msg = update_setting("checklist_datang", new_checklist)
+                            if success:
+                                st.success(f"✅ Item '{item_baru}' berhasil ditambahkan")
+                                add_audit("checklist_add", f"Tambah checklist datang: {item_baru}")
+                                st.rerun()
+                            else:
+                                st.error(msg)
                         else:
-                            st.error(msg)
+                            st.error("❌ Mohon isi item checklist")
+                
+                st.markdown("---")
+                
+                if st.button("💾 Simpan Perubahan Checklist", type="primary", use_container_width=True, key="save_checklist_datang"):
+                    success, msg = update_setting("checklist_datang", new_checklist if new_checklist else checklist_datang)
+                    if success:
+                        st.success("✅ Checklist datang berhasil disimpan!")
+                        add_audit("checklist_update", "Update checklist datang")
+                        st.rerun()
                     else:
-                        st.error("❌ Mohon isi item checklist")
+                        st.error(msg)
             
-            st.markdown("---")
-            
-            if st.button("💾 Simpan Perubahan Checklist", type="primary", use_container_width=True, key="save_checklist_selesai"):
-                success, msg = update_setting("checklist_selesai", new_checklist_selesai if new_checklist_selesai else checklist_selesai)
-                if success:
-                    st.success("✅ Checklist selesai berhasil disimpan!")
-                    add_audit("checklist_update", "Update checklist selesai")
-                    st.rerun()
-                else:
-                    st.error(msg)
+            with subtab4:
+                st.markdown("##### ✓ Kelola Checklist QC Selesai")
+                
+                checklist_selesai = get_checklist_selesai()
+                
+                st.info("ℹ️ Checklist untuk quality control setelah selesai cuci")
+                
+                # Tampilkan checklist yang ada
+                new_checklist_selesai = []
+                for idx, item in enumerate(checklist_selesai):
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        new_item = st.text_input(f"Item {idx+1}", value=item, key=f"check_selesai_{idx}", label_visibility="collapsed")
+                        if new_item:
+                            new_checklist_selesai.append(new_item)
+                    with col2:
+                        if st.button("🗑️", key=f"del_check_selesai_{idx}", help="Hapus item"):
+                            pass  # Item akan terhapus karena tidak masuk new_checklist_selesai
+                
+                st.markdown("---")
+                
+                # Tambah item baru
+                st.markdown("**➕ Tambah Item Baru:**")
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    item_baru_selesai = st.text_input("Item Checklist Baru", key="new_check_selesai", placeholder="Contoh: Velg mengkilap")
+                with col2:
+                    if st.button("➕", key="add_check_selesai"):
+                        if item_baru_selesai:
+                            new_checklist_selesai.append(item_baru_selesai)
+                            success, msg = update_setting("checklist_selesai", new_checklist_selesai)
+                            if success:
+                                st.success(f"✅ Item '{item_baru_selesai}' berhasil ditambahkan")
+                                add_audit("checklist_add", f"Tambah checklist selesai: {item_baru_selesai}")
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                        else:
+                            st.error("❌ Mohon isi item checklist")
+                
+                st.markdown("---")
+                
+                if st.button("💾 Simpan Perubahan Checklist", type="primary", use_container_width=True, key="save_checklist_selesai"):
+                    success, msg = update_setting("checklist_selesai", new_checklist_selesai if new_checklist_selesai else checklist_selesai)
+                    if success:
+                        st.success("✅ Checklist selesai berhasil disimpan!")
+                        add_audit("checklist_update", "Update checklist selesai")
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
 
 def kasir_page(role):
@@ -3277,10 +3460,11 @@ def kasir_page(role):
     df_pending = get_pending_wash_transactions()
     jumlah_pending = len(df_pending)
     
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         f"💰 Transaksi Kasir ({jumlah_pending} Pending)",
         f"☕️ Coffee Shop ({jumlah_history_coffee})",
         f"📜 History Kasir ({jumlah_history_kasir})",
+        "✏️ Edit/Hapus Transaksi",
         "⚙️ Setting Menu"
     ])
     
@@ -3699,6 +3883,61 @@ def kasir_page(role):
                 st.warning("⚠️ Tidak ada transaksi yang sesuai dengan pencarian")
     
     with tab4:
+        st.subheader("✏️ Edit / Hapus Transaksi Kasir")
+        st.warning("⚠️ Hati-hati saat menghapus transaksi! Data yang dihapus tidak dapat dikembalikan.")
+        
+        df_kasir_all = get_all_kasir_transactions()
+        
+        if df_kasir_all.empty:
+            st.info("📭 Belum ada transaksi kasir untuk diedit atau dihapus")
+        else:
+            # Select transaction
+            trans_options = {}
+            for _, row in df_kasir_all.iterrows():
+                label = f"ID:{row['id']} | {row['tanggal']} {row['waktu']} | {row['nopol']} - {row['nama_customer']} | Total: Rp {row['total_bayar']:,.0f}"
+                trans_options[label] = row
+            
+            selected_trans = st.selectbox("Pilih Transaksi Kasir", list(trans_options.keys()), key="select_kasir_trans_edit")
+            
+            if selected_trans:
+                trans_data = trans_options[selected_trans]
+                
+                # Show transaction details
+                with st.expander("📋 Detail Transaksi", expanded=True):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.write("**Customer:**")
+                        st.write(f"Nopol: {trans_data['nopol']}")
+                        st.write(f"Nama: {trans_data['nama_customer']}")
+                        st.write(f"Telp: {trans_data.get('no_telp', '-')}")
+                    with col2:
+                        st.write("**Waktu:**")
+                        st.write(f"Tanggal: {trans_data['tanggal']}")
+                        st.write(f"Waktu: {trans_data['waktu']}")
+                        st.write(f"Kasir: {trans_data.get('created_by', '-')}")
+                    with col3:
+                        st.write("**Pembayaran:**")
+                        st.write(f"Total: Rp {trans_data['total_bayar']:,.0f}")
+                        st.write(f"Metode: {trans_data.get('metode_bayar', '-')}")
+                        st.write(f"Status: {trans_data.get('status_bayar', '-')}")
+                
+                st.markdown("---")
+                
+                # Delete button
+                col1, col2, col3 = st.columns([2, 1, 2])
+                with col2:
+                    if st.button("🗑️ Hapus Transaksi", type="primary", use_container_width=True, key="delete_kasir_trans_btn"):
+                        success, msg = delete_kasir_transaction(trans_data['id'])
+                        if success:
+                            add_audit("delete_kasir_trans", f"Hapus transaksi kasir ID:{trans_data['id']} - {trans_data['nopol']}")
+                            st.success(f"✅ {msg}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
+                
+                st.info("ℹ️ Untuk mengedit detail transaksi kasir, silakan hapus dan buat transaksi baru.")
+    
+    with tab5:
         st.subheader("⚙️ Kelola Menu Coffee Shop")
         
         # Check role
@@ -3817,7 +4056,7 @@ def customer_page(role):
     
     st.markdown('<div class="cust-header"><h2>👥 Manajemen Customer</h2></div>', unsafe_allow_html=True)
     
-    tab1, tab2 = st.tabs(["📋 Daftar Customer", "➕ Tambah Customer Baru"])
+    tab1, tab2, tab3 = st.tabs(["📋 Daftar Customer", "➕ Tambah Customer Baru", "✏️ Edit/Hapus Customer"])
     
     with tab1:
         df_cust = get_all_customers()
@@ -3910,6 +4149,78 @@ def customer_page(role):
                         st.rerun()
                     else:
                         st.error(f"❌ {msg}")
+    
+    with tab3:
+        st.markdown('<div class="customer-card">', unsafe_allow_html=True)
+        st.subheader("✏️ Edit / Hapus Data Customer")
+        
+        df_cust = get_all_customers()
+        
+        if df_cust.empty:
+            st.info("📭 Belum ada customer untuk diedit atau dihapus")
+        else:
+            # Select customer to edit
+            cust_options = {f"{row['nopol']} - {row['nama_customer']}": row for _, row in df_cust.iterrows()}
+            selected_cust = st.selectbox("Pilih Customer", list(cust_options.keys()), key="select_cust_edit")
+            
+            if selected_cust:
+                cust_data = cust_options[selected_cust]
+                
+                col_edit, col_delete = st.columns([3, 1])
+                
+                with col_edit:
+                    st.markdown("#### ✏️ Edit Customer")
+                    with st.form("edit_customer_form"):
+                        st.info(f"📝 Edit data untuk: **{cust_data['nopol']}**")
+                        
+                        edit_nama = st.text_input("Nama Customer *", value=cust_data['nama_customer'])
+                        edit_telp = st.text_input("No. Telepon", value=cust_data['no_telp'] or "")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            edit_jenis = st.text_input("Jenis Kendaraan", value=cust_data.get('jenis_kendaraan', '') or "")
+                        with col2:
+                            edit_merk = st.text_input("Merk Kendaraan", value=cust_data.get('merk_kendaraan', '') or "")
+                        with col3:
+                            ukuran_options = ["", "Kecil", "Sedang", "Besar", "Extra Besar"]
+                            current_ukuran = cust_data.get('ukuran_mobil', '') or ""
+                            ukuran_idx = ukuran_options.index(current_ukuran) if current_ukuran in ukuran_options else 0
+                            edit_ukuran = st.selectbox("Ukuran Mobil", options=ukuran_options, index=ukuran_idx)
+                        
+                        col_btn1, col_btn2 = st.columns(2)
+                        with col_btn1:
+                            submit_edit = st.form_submit_button("💾 Update Customer", type="primary", use_container_width=True)
+                        with col_btn2:
+                            cancel = st.form_submit_button("❌ Batal", use_container_width=True)
+                        
+                        if submit_edit:
+                            if not edit_nama:
+                                st.error("❌ Nama customer wajib diisi")
+                            else:
+                                success, msg = update_customer(
+                                    cust_data['nopol'], edit_nama, edit_telp,
+                                    edit_jenis, edit_merk, edit_ukuran
+                                )
+                                if success:
+                                    add_audit("update_customer", f"Update customer {cust_data['nopol']}")
+                                    st.success(f"✅ {msg}")
+                                    st.balloons()
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+                
+                with col_delete:
+                    st.markdown("#### 🗑️ Hapus Customer")
+                    st.warning("⚠️ Aksi ini tidak dapat dibatalkan!")
+                    
+                    if st.button("🗑️ Hapus Customer", type="primary", use_container_width=True, key="delete_cust_btn"):
+                        success, msg = delete_customer(cust_data['nopol'])
+                        if success:
+                            add_audit("delete_customer", f"Hapus customer {cust_data['nopol']}")
+                            st.success(f"✅ {msg}")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
 
 def laporan_page(role):
     st.markdown("""
@@ -6109,17 +6420,6 @@ def main():
         return
     
     role = st.session_state.get("login_role", "Kasir")
-    
-    # Initialize menu state based on role
-    if "menu" not in st.session_state:
-        if role == "Admin":
-            st.session_state["menu"] = "Dashboard"
-        elif role == "Supervisor":
-            st.session_state["menu"] = "Cuci Mobil"
-        elif role == "Kasir":
-            st.session_state["menu"] = "Kasir"
-        else:
-            st.session_state["menu"] = "Dashboard"
     
     # Custom sidebar styling
     st.sidebar.markdown("""
