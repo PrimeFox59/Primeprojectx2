@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
-from datetime import datetime, date
+from datetime import datetime, date, time, timedelta
 import altair as alt
 import pytz
 import json
@@ -98,7 +98,9 @@ def init_db():
             nopol TEXT UNIQUE NOT NULL,
             nama_customer TEXT NOT NULL,
             no_telp TEXT,
-            alamat TEXT,
+            jenis_kendaraan TEXT,
+            merk_kendaraan TEXT,
+            ukuran_mobil TEXT,
             created_at TEXT NOT NULL
         )
     ''')
@@ -114,6 +116,9 @@ def init_db():
             waktu_selesai TEXT,
             paket_cuci TEXT NOT NULL,
             harga INTEGER NOT NULL,
+            jenis_kendaraan TEXT,
+            merk_kendaraan TEXT,
+            ukuran_mobil TEXT,
             checklist_datang TEXT,
             checklist_selesai TEXT,
             qc_barang TEXT,
@@ -173,6 +178,15 @@ def init_db():
         # Default coffee shop menu
         c.execute("INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
                  ("coffee_menu", json.dumps(DEFAULT_COFFEE_MENU), now))
+        # Default multiplier ukuran mobil
+        default_multiplier = {
+            "Kecil": 1.0,
+            "Sedang": 1.2,
+            "Besar": 1.5,
+            "Extra Besar": 2.0
+        }
+        c.execute("INSERT INTO settings (setting_key, setting_value, updated_at) VALUES (?, ?, ?)",
+                 ("ukuran_multiplier", json.dumps(default_multiplier), now))
 
     # Tabel untuk menyimpan transaksi penjualan kopi/snack
     c.execute('''
@@ -226,6 +240,44 @@ def init_db():
     except sqlite3.OperationalError:
         # Column doesn't exist, add it
         c.execute("ALTER TABLE kasir_transactions ADD COLUMN secret_code TEXT")
+        conn.commit()
+    
+    # Migration: Add vehicle info columns to customers table if they don't exist
+    try:
+        c.execute("SELECT jenis_kendaraan FROM customers LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE customers ADD COLUMN jenis_kendaraan TEXT")
+        conn.commit()
+    
+    try:
+        c.execute("SELECT merk_kendaraan FROM customers LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE customers ADD COLUMN merk_kendaraan TEXT")
+        conn.commit()
+    
+    try:
+        c.execute("SELECT ukuran_mobil FROM customers LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE customers ADD COLUMN ukuran_mobil TEXT")
+        conn.commit()
+    
+    # Migration: Add vehicle info columns to wash_transactions table if they don't exist
+    try:
+        c.execute("SELECT jenis_kendaraan FROM wash_transactions LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE wash_transactions ADD COLUMN jenis_kendaraan TEXT")
+        conn.commit()
+    
+    try:
+        c.execute("SELECT merk_kendaraan FROM wash_transactions LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE wash_transactions ADD COLUMN merk_kendaraan TEXT")
+        conn.commit()
+    
+    try:
+        c.execute("SELECT ukuran_mobil FROM wash_transactions LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE wash_transactions ADD COLUMN ukuran_mobil TEXT")
         conn.commit()
     
     # Tabel customer_reviews - untuk menyimpan review dari customer
@@ -294,6 +346,112 @@ def init_db():
         )
     ''')
     
+    # Tabel users - untuk menyimpan user accounts
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT,
+            last_login TEXT
+        )
+    ''')
+    
+    # Insert default users jika belum ada
+    c.execute("SELECT COUNT(*) FROM users")
+    if c.fetchone()[0] == 0:
+        now = datetime.now(WIB).strftime("%d-%m-%Y %H:%M:%S")
+        default_users = [
+            ("admin", "admin123", "Admin", now, "system", None),
+            ("kasir", "kasir123", "Kasir", now, "system", None),
+            ("supervisor", "super123", "Supervisor", now, "system", None)
+        ]
+        c.executemany("""
+            INSERT INTO users (username, password, role, created_at, created_by, last_login)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, default_users)
+    
+    # Tabel employees - data karyawan
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS employees (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nama TEXT NOT NULL,
+            role_karyawan TEXT NOT NULL,
+            gaji_tetap INTEGER DEFAULT 0,
+            shift TEXT,
+            jam_masuk_default TEXT,
+            jam_pulang_default TEXT,
+            status TEXT DEFAULT 'Aktif',
+            no_telp TEXT,
+            created_at TEXT NOT NULL,
+            created_by TEXT
+        )
+    ''')
+    
+    # Tabel attendance - presensi karyawan
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS attendance (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id INTEGER NOT NULL,
+            tanggal TEXT NOT NULL,
+            jam_masuk TEXT NOT NULL,
+            jam_pulang TEXT,
+            shift TEXT,
+            status TEXT DEFAULT 'Hadir',
+            catatan TEXT,
+            created_by TEXT,
+            FOREIGN KEY (employee_id) REFERENCES employees(id)
+        )
+    ''')
+    
+    # Tabel payroll - pembayaran gaji
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS payroll (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id INTEGER NOT NULL,
+            periode_awal TEXT NOT NULL,
+            periode_akhir TEXT NOT NULL,
+            total_hari_kerja INTEGER DEFAULT 0,
+            total_gaji INTEGER NOT NULL,
+            bonus INTEGER DEFAULT 0,
+            potongan INTEGER DEFAULT 0,
+            gaji_bersih INTEGER NOT NULL,
+            status TEXT DEFAULT 'Pending',
+            tanggal_bayar TEXT,
+            catatan TEXT,
+            created_at TEXT NOT NULL,
+            created_by TEXT,
+            FOREIGN KEY (employee_id) REFERENCES employees(id)
+        )
+    ''')
+    
+    # Tabel shift_settings - setting shift dan persentase
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS shift_settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shift_name TEXT UNIQUE NOT NULL,
+            jam_mulai TEXT NOT NULL,
+            jam_selesai TEXT NOT NULL,
+            persentase_gaji REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    ''')
+    
+    # Insert default shift settings
+    c.execute("SELECT COUNT(*) FROM shift_settings")
+    if c.fetchone()[0] == 0:
+        now = datetime.now(WIB).strftime("%d-%m-%Y %H:%M:%S")
+        default_shifts = [
+            ("Pagi", "08:00", "17:00", 35.0, now),
+            ("Malam", "17:00", "08:00", 45.0, now)
+        ]
+        c.executemany("""
+            INSERT INTO shift_settings (shift_name, jam_mulai, jam_selesai, persentase_gaji, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, default_shifts)
+    
     conn.commit()
     conn.close()
 
@@ -304,16 +462,16 @@ def generate_secret_code():
 
 
 # --- Simpan & Load Customer ---
-def save_customer(nopol, nama, telp, alamat):
+def save_customer(nopol, nama, telp, jenis_kendaraan='', merk_kendaraan='', ukuran_mobil=''):
     """Simpan data customer baru"""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     now_wib = datetime.now(WIB)
     try:
         c.execute("""
-            INSERT INTO customers (nopol, nama_customer, no_telp, alamat, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (nopol.upper(), nama, telp, alamat, now_wib.strftime("%d-%m-%Y %H:%M:%S")))
+            INSERT INTO customers (nopol, nama_customer, no_telp, jenis_kendaraan, merk_kendaraan, ukuran_mobil, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (nopol.upper(), nama, telp, jenis_kendaraan, merk_kendaraan, ukuran_mobil, now_wib.strftime("%d-%m-%Y %H:%M:%S")))
         conn.commit()
         return True, "Customer berhasil ditambahkan"
     except sqlite3.IntegrityError:
@@ -336,8 +494,10 @@ def get_customer_by_nopol(nopol):
             'nopol': result[1],
             'nama_customer': result[2],
             'no_telp': result[3],
-            'alamat': result[4],
-            'created_at': result[5]
+            'jenis_kendaraan': result[4] if len(result) > 4 else '',
+            'merk_kendaraan': result[5] if len(result) > 5 else '',
+            'ukuran_mobil': result[6] if len(result) > 6 else '',
+            'created_at': result[7] if len(result) > 7 else result[4]
         }
     return None
 
@@ -357,8 +517,9 @@ def save_transaction(data):
         c.execute("""
             INSERT INTO wash_transactions 
             (nopol, nama_customer, tanggal, waktu_masuk, waktu_selesai, paket_cuci, harga, 
+             jenis_kendaraan, merk_kendaraan, ukuran_mobil,
              checklist_datang, checklist_selesai, qc_barang, catatan, status, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data['nopol'].upper(),
             data['nama_customer'],
@@ -367,6 +528,9 @@ def save_transaction(data):
             data.get('waktu_selesai', ''),
             data['paket_cuci'],
             data['harga'],
+            data.get('jenis_kendaraan', ''),
+            data.get('merk_kendaraan', ''),
+            data.get('ukuran_mobil', ''),
             data.get('checklist_datang', ''),
             data.get('checklist_selesai', ''),
             data.get('qc_barang', ''),
@@ -505,6 +669,222 @@ def get_toko_info():
         "telp": "08123456789",
         "email": "info@timeautocare.com"
     }
+
+def get_ukuran_multiplier():
+    """Ambil multiplier harga berdasarkan ukuran mobil"""
+    multiplier = get_setting("ukuran_multiplier")
+    if multiplier:
+        return multiplier
+    # Default multiplier
+    return {
+        "Kecil": 1.0,
+        "Sedang": 1.2,
+        "Besar": 1.5,
+        "Extra Besar": 2.0
+    }
+
+
+# ========== PAYROLL FUNCTIONS ==========
+
+def get_all_employees():
+    """Get all employees"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM employees ORDER BY id DESC")
+    employees = [dict(zip([column[0] for column in c.description], row)) for row in c.fetchall()]
+    conn.close()
+    return employees
+
+def add_employee(nama, role_karyawan, gaji_tetap, shift, jam_masuk_default, jam_pulang_default, no_telp, created_by):
+    """Add new employee"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    now = datetime.now(WIB).strftime("%d-%m-%Y %H:%M:%S")
+    c.execute("""
+        INSERT INTO employees (nama, role_karyawan, gaji_tetap, shift, jam_masuk_default, jam_pulang_default, status, no_telp, created_at, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, 'Aktif', ?, ?, ?)
+    """, (nama, role_karyawan, gaji_tetap, shift, jam_masuk_default, jam_pulang_default, no_telp, now, created_by))
+    conn.commit()
+    conn.close()
+
+def update_employee(emp_id, nama, role_karyawan, gaji_tetap, shift, jam_masuk_default, jam_pulang_default, no_telp, status):
+    """Update employee data"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    c.execute("""
+        UPDATE employees 
+        SET nama=?, role_karyawan=?, gaji_tetap=?, shift=?, jam_masuk_default=?, jam_pulang_default=?, no_telp=?, status=?
+        WHERE id=?
+    """, (nama, role_karyawan, gaji_tetap, shift, jam_masuk_default, jam_pulang_default, no_telp, status, emp_id))
+    conn.commit()
+    conn.close()
+
+def delete_employee(emp_id):
+    """Delete employee"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM employees WHERE id=?", (emp_id,))
+    conn.commit()
+    conn.close()
+
+def get_shift_settings():
+    """Get shift settings"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM shift_settings")
+    shifts = [dict(zip([column[0] for column in c.description], row)) for row in c.fetchall()]
+    conn.close()
+    return shifts
+
+def update_shift_settings(shift_name, jam_mulai, jam_selesai, persentase):
+    """Update shift settings"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    now = datetime.now(WIB).strftime("%d-%m-%Y %H:%M:%S")
+    c.execute("""
+        UPDATE shift_settings 
+        SET jam_mulai=?, jam_selesai=?, persentase_gaji=?, updated_at=?
+        WHERE shift_name=?
+    """, (jam_mulai, jam_selesai, persentase, now, shift_name))
+    conn.commit()
+    conn.close()
+
+def add_attendance(employee_id, tanggal, jam_masuk, jam_pulang, shift, status, catatan, created_by):
+    """Add attendance record"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO attendance (employee_id, tanggal, jam_masuk, jam_pulang, shift, status, catatan, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (employee_id, tanggal, jam_masuk, jam_pulang, shift, status, catatan, created_by))
+    conn.commit()
+    conn.close()
+
+def get_attendance_by_date_range(start_date, end_date):
+    """Get attendance records by date range"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT a.*, e.nama, e.role_karyawan
+        FROM attendance a
+        JOIN employees e ON a.employee_id = e.id
+        WHERE a.tanggal BETWEEN ? AND ?
+        ORDER BY a.tanggal DESC, a.jam_masuk DESC
+    """, (start_date, end_date))
+    attendance = [dict(zip([column[0] for column in c.description], row)) for row in c.fetchall()]
+    conn.close()
+    return attendance
+
+def get_wash_revenue_by_time_range(start_datetime, end_datetime):
+    """Get total wash revenue between datetime range"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    
+    # Query untuk mendapatkan total pendapatan dalam range waktu
+    c.execute("""
+        SELECT COALESCE(SUM(harga_final), 0) as total
+        FROM wash_transactions
+        WHERE datetime(substr(tanggal, 7, 4) || '-' || substr(tanggal, 4, 2) || '-' || substr(tanggal, 1, 2) || ' ' || waktu) 
+        BETWEEN ? AND ?
+    """, (start_datetime, end_datetime))
+    
+    result = c.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+def calculate_worker_salary(employee_id, tanggal, jam_masuk, jam_pulang, shift):
+    """Calculate salary for worker based on actual working hours"""
+    # Get shift settings
+    shifts = get_shift_settings()
+    shift_data = next((s for s in shifts if s['shift_name'] == shift), None)
+    
+    if not shift_data:
+        return 0
+    
+    persentase = shift_data['persentase_gaji'] / 100
+    
+    # Convert strings to datetime for calculation
+    try:
+        tanggal_obj = datetime.strptime(tanggal, "%d-%m-%Y")
+        jam_masuk_obj = datetime.strptime(jam_masuk, "%H:%M")
+        
+        if jam_pulang:
+            jam_pulang_obj = datetime.strptime(jam_pulang, "%H:%M")
+        else:
+            # Jika belum pulang, gunakan waktu sekarang
+            jam_pulang_obj = datetime.now(WIB)
+        
+        # Gabungkan tanggal dan jam
+        datetime_masuk = datetime.combine(tanggal_obj.date(), jam_masuk_obj.time())
+        datetime_pulang = datetime.combine(tanggal_obj.date(), jam_pulang_obj.time())
+        
+        # Jika shift malam dan jam pulang lebih kecil, tambah 1 hari
+        if shift == "Malam" and jam_pulang_obj.time() < jam_masuk_obj.time():
+            datetime_pulang = datetime_pulang + timedelta(days=1)
+        
+        # Format untuk query
+        start_str = datetime_masuk.strftime("%Y-%m-%d %H:%M:%S")
+        end_str = datetime_pulang.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Get revenue dalam periode kerja
+        revenue = get_wash_revenue_by_time_range(start_str, end_str)
+        
+        # Calculate salary
+        salary = int(revenue * persentase)
+        return salary
+        
+    except Exception as e:
+        st.error(f"Error calculating salary: {e}")
+        return 0
+
+def add_payroll(employee_id, periode_awal, periode_akhir, total_hari_kerja, total_gaji, bonus, potongan, gaji_bersih, status, tanggal_bayar, catatan, created_by):
+    """Add payroll record"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    now = datetime.now(WIB).strftime("%d-%m-%Y %H:%M:%S")
+    c.execute("""
+        INSERT INTO payroll (employee_id, periode_awal, periode_akhir, total_hari_kerja, total_gaji, bonus, potongan, gaji_bersih, status, tanggal_bayar, catatan, created_at, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (employee_id, periode_awal, periode_akhir, total_hari_kerja, total_gaji, bonus, potongan, gaji_bersih, status, tanggal_bayar, catatan, now, created_by))
+    conn.commit()
+    conn.close()
+
+def get_payroll_history(employee_id=None):
+    """Get payroll history"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    
+    if employee_id:
+        c.execute("""
+            SELECT p.*, e.nama, e.role_karyawan
+            FROM payroll p
+            JOIN employees e ON p.employee_id = e.id
+            WHERE p.employee_id = ?
+            ORDER BY p.created_at DESC
+        """, (employee_id,))
+    else:
+        c.execute("""
+            SELECT p.*, e.nama, e.role_karyawan
+            FROM payroll p
+            JOIN employees e ON p.employee_id = e.id
+            ORDER BY p.created_at DESC
+        """)
+    
+    payroll = [dict(zip([column[0] for column in c.description], row)) for row in c.fetchall()]
+    conn.close()
+    return payroll
+
+def update_payroll_status(payroll_id, status, tanggal_bayar):
+    """Update payroll status"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    c.execute("""
+        UPDATE payroll 
+        SET status=?, tanggal_bayar=?
+        WHERE id=?
+    """, (status, tanggal_bayar, payroll_id))
+    conn.commit()
+    conn.close()
 
 
 # --- Coffee Shop Helpers ---
@@ -976,6 +1356,96 @@ USERS = {
     "supervisor": {"password": "super123", "role": "Supervisor"},
 }
 
+# --- User Management Functions ---
+def get_user_from_db(username):
+    """Ambil user dari database"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE username = ?", (username.lower(),))
+    result = c.fetchone()
+    conn.close()
+    if result:
+        return {
+            'id': result[0],
+            'username': result[1],
+            'password': result[2],
+            'role': result[3],
+            'created_at': result[4],
+            'created_by': result[5],
+            'last_login': result[6]
+        }
+    return None
+
+def get_all_users():
+    """Ambil semua users"""
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql("SELECT id, username, role, created_at, created_by, last_login FROM users ORDER BY created_at DESC", conn)
+    conn.close()
+    return df
+
+def add_user(username, password, role, created_by):
+    """Tambah user baru"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    now_wib = datetime.now(WIB)
+    try:
+        c.execute("""
+            INSERT INTO users (username, password, role, created_at, created_by, last_login)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (username.lower(), password, role, now_wib.strftime("%d-%m-%Y %H:%M:%S"), created_by, None))
+        conn.commit()
+        return True, "User berhasil ditambahkan"
+    except sqlite3.IntegrityError:
+        return False, "Username sudah terdaftar"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def update_user(username, password=None, role=None):
+    """Update user"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        if password and role:
+            c.execute("UPDATE users SET password = ?, role = ? WHERE username = ?",
+                     (password, role, username.lower()))
+        elif password:
+            c.execute("UPDATE users SET password = ? WHERE username = ?",
+                     (password, username.lower()))
+        elif role:
+            c.execute("UPDATE users SET role = ? WHERE username = ?",
+                     (role, username.lower()))
+        conn.commit()
+        return True, "User berhasil diupdate"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def delete_user(username):
+    """Hapus user"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM users WHERE username = ?", (username.lower(),))
+        conn.commit()
+        return True, "User berhasil dihapus"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+    finally:
+        conn.close()
+
+def update_last_login(username):
+    """Update last login timestamp"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    now_wib = datetime.now(WIB)
+    c.execute("UPDATE users SET last_login = ? WHERE username = ?",
+             (now_wib.strftime("%d-%m-%Y %H:%M:%S"), username.lower()))
+    conn.commit()
+    conn.close()
+
 # --- Audit Trail Helper ---
 def add_audit(action, detail=None):
     """Simpan audit trail ke database SQLite agar persisten dan bisa dilihat semua user"""
@@ -1047,11 +1517,18 @@ def login_page():
         
         if login_btn:
             uname = username.strip().lower()
-            if uname in USERS and password == USERS[uname]["password"]:
+            # Try database first, fallback to hardcoded USERS
+            user_data = get_user_from_db(uname)
+            if not user_data and uname in USERS:
+                # Fallback to hardcoded users
+                user_data = {"username": uname, "password": USERS[uname]["password"], "role": USERS[uname]["role"]}
+            
+            if user_data and password == user_data["password"]:
                 st.session_state["is_logged_in"] = True
                 st.session_state["login_user"] = uname
-                st.session_state["login_role"] = USERS[uname]["role"]
-                add_audit("login", f"Login sebagai {USERS[uname]['role']}")
+                st.session_state["login_role"] = user_data["role"]
+                update_last_login(uname)
+                add_audit("login", f"Login sebagai {user_data['role']}")
                 st.success(f"✅ Login berhasil!")
                 st.rerun()
             else:
@@ -1696,10 +2173,46 @@ def transaksi_page(role):
     
     st.markdown('<div class="trans-header"><h2>🚗  TIME AUTOCARE</h2></div>', unsafe_allow_html=True)
     
+    # Get current user
+    current_user = st.session_state.get('login_user', '-')
+    
+    # Hitung perolehan personal user hari ini
+    today = datetime.now(WIB).strftime('%d-%m-%Y')
+    df_all = get_all_transactions()
+    
+    # Filter transaksi hari ini yang dibuat oleh user yang login
+    df_today_user = df_all[
+        (df_all['tanggal'] == today) & 
+        (df_all['created_by'] == current_user)
+    ]
+    
+    jumlah_mobil_today = len(df_today_user)
+    pendapatan_today = df_today_user['harga'].sum() if not df_today_user.empty else 0
+    
+    # Card Perolehan Personal Hari Ini
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 1.5rem; border-radius: 15px; margin-bottom: 1.5rem; box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);">
+        <div style="color: white;">
+            <div style="font-size: 1rem; margin-bottom: 0.5rem; font-weight: 600; text-shadow: 0 2px 4px rgba(0,0,0,0.2);">📊 Perolehan Hari Ini - {current_user.upper()}</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem;">
+                <div style="background: rgba(255,255,255,0.95); padding: 1rem; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    <div style="font-size: 0.8rem; color: #636e72; margin-bottom: 0.3rem; font-weight: 600;">🚗 MOBIL MASUK</div>
+                    <div style="font-size: 2.2rem; font-weight: 900; color: #2d3436;">{jumlah_mobil_today}</div>
+                    <div style="font-size: 0.75rem; color: #b2bec3; margin-top: 0.2rem;">unit</div>
+                </div>
+                <div style="background: rgba(255,255,255,0.95); padding: 1rem; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                    <div style="font-size: 0.8rem; color: #636e72; margin-bottom: 0.3rem; font-weight: 600;">💰 PENDAPATAN</div>
+                    <div style="font-size: 1.8rem; font-weight: 900; color: #2d3436;">Rp {pendapatan_today:,.0f}</div>
+                    <div style="font-size: 0.75rem; color: #b2bec3; margin-top: 0.2rem;">hari ini</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
     # Hitung jumlah transaksi dalam proses untuk badge
-    df_check = get_all_transactions()
-    jumlah_proses = len(df_check[df_check['status'] == 'Dalam Proses'])
-    jumlah_selesai = len(df_check[df_check['status'] == 'Selesai'])
+    jumlah_proses = len(df_all[df_all['status'] == 'Dalam Proses'])
+    jumlah_selesai = len(df_all[df_all['status'] == 'Selesai'])
     
     tab1, tab2, tab3, tab4 = st.tabs([
         "📝 Transaksi Baru", 
@@ -1745,16 +2258,27 @@ def transaksi_page(role):
                 """, unsafe_allow_html=True)
                 nama_cust = customer_data['nama_customer']
                 telp_cust = customer_data['no_telp']
-                alamat_cust = customer_data['alamat']
+                jenis_kendaraan_existing = customer_data.get('jenis_kendaraan', '')
+                merk_kendaraan_existing = customer_data.get('merk_kendaraan', '')
+                ukuran_mobil_existing = customer_data.get('ukuran_mobil', '')
                 
                 with st.expander("👁️ Lihat Detail Customer", expanded=False):
                     col_a, col_b = st.columns(2)
                     with col_a:
                         st.write(f"**📞 Telepon:**")
                         st.info(f"{telp_cust}")
-                    with col_b:
-                        st.write(f"**📍 Alamat:**")
-                        st.info(f"{alamat_cust}")
+                    if jenis_kendaraan_existing or merk_kendaraan_existing or ukuran_mobil_existing:
+                        st.write("**🚗 Info Kendaraan:**")
+                        col_jenis, col_merk, col_ukuran = st.columns(3)
+                        with col_jenis:
+                            if jenis_kendaraan_existing:
+                                st.info(f"Jenis: {jenis_kendaraan_existing}")
+                        with col_merk:
+                            if merk_kendaraan_existing:
+                                st.info(f"Merk: {merk_kendaraan_existing}")
+                        with col_ukuran:
+                            if ukuran_mobil_existing:
+                                st.info(f"Ukuran: {ukuran_mobil_existing}")
             else:
                 if nopol_input:
                     st.markdown("""
@@ -1765,13 +2289,41 @@ def transaksi_page(role):
                     """, unsafe_allow_html=True)
                 nama_cust = st.text_input("Nama Customer", key="trans_nama", 
                                          placeholder="Nama lengkap customer")
-                col_tel, col_addr = st.columns(2)
-                with col_tel:
-                    telp_cust = st.text_input("No. Telepon", key="trans_telp", 
-                                             placeholder="08xxxxxxxxxx")
-                with col_addr:
-                    alamat_cust = st.text_input("Alamat", key="trans_alamat", 
-                                               placeholder="Alamat customer")
+                telp_cust = st.text_input("No. Telepon", key="trans_telp", 
+                                         placeholder="08xxxxxxxxxx")
+                jenis_kendaraan_existing = ''
+                merk_kendaraan_existing = ''
+                ukuran_mobil_existing = ''
+            
+            # Input Info Kendaraan
+            st.markdown("""
+            <div style="margin: 1.5rem 0 0.5rem 0;">
+                <h4 style="margin: 0; color: #2d3436; font-size: 1rem; font-weight: 600; padding: 0.6rem 0; border-bottom: 2px solid #e0e0e0;">🚙 Informasi Kendaraan</h4>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            col_jenis, col_merk, col_ukuran = st.columns(3)
+            with col_jenis:
+                jenis_kendaraan = st.text_input(
+                    "Jenis Kendaraan", 
+                    value=jenis_kendaraan_existing,
+                    key="trans_jenis", 
+                    placeholder="Sedan/SUV/MPV/Hatchback"
+                )
+            with col_merk:
+                merk_kendaraan = st.text_input(
+                    "Merk Kendaraan", 
+                    value=merk_kendaraan_existing,
+                    key="trans_merk", 
+                    placeholder="Toyota/Honda/Daihatsu"
+                )
+            with col_ukuran:
+                ukuran_mobil = st.selectbox(
+                    "Ukuran Mobil", 
+                    options=["", "Kecil", "Sedang", "Besar", "Extra Besar"],
+                    index=["", "Kecil", "Sedang", "Besar", "Extra Besar"].index(ukuran_mobil_existing) if ukuran_mobil_existing in ["", "Kecil", "Sedang", "Besar", "Extra Besar"] else 0,
+                    key="trans_ukuran"
+                )
         
         with col2:
             st.markdown("""
@@ -1796,12 +2348,27 @@ def transaksi_page(role):
             paket = st.selectbox("Pilih Paket Cuci", options=list(paket_cucian.keys()), key="trans_paket")
         
         harga = paket_cucian[paket]
+        
+        # Hitung harga dengan multiplier berdasarkan ukuran
+        multiplier_map = get_ukuran_multiplier()
+        multiplier = multiplier_map.get(ukuran_mobil, 1.0) if ukuran_mobil else 1.0
+        harga_final = int(harga * multiplier)
+        
         with col_harga:
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; padding: 0.8rem; border-radius: 10px; text-align: center; font-size: 1.2rem; font-weight: 800; box-shadow: 0 3px 10px rgba(67, 233, 123, 0.3); margin-top: 1.7rem;">
-                💰 Rp {harga:,.0f}
-            </div>
-            """, unsafe_allow_html=True)
+            if multiplier > 1.0:
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; padding: 0.8rem; border-radius: 10px; text-align: center; box-shadow: 0 3px 10px rgba(67, 233, 123, 0.3); margin-top: 1.7rem;">
+                    <div style="font-size: 0.75rem; opacity: 0.9; margin-bottom: 0.2rem;">Harga Dasar: Rp {harga:,.0f}</div>
+                    <div style="font-size: 0.75rem; opacity: 0.9; margin-bottom: 0.3rem;">Multiplier {ukuran_mobil}: x{multiplier}</div>
+                    <div style="font-size: 1.2rem; font-weight: 800;">💰 Rp {harga_final:,.0f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; padding: 0.8rem; border-radius: 10px; text-align: center; font-size: 1.2rem; font-weight: 800; box-shadow: 0 3px 10px rgba(67, 233, 123, 0.3); margin-top: 1.7rem;">
+                    💰 Rp {harga_final:,.0f}
+                </div>
+                """, unsafe_allow_html=True)
         
         # Checklist saat datang
         st.markdown("""
@@ -1843,15 +2410,35 @@ def transaksi_page(role):
             else:
                 # Simpan customer baru jika belum ada
                 if not customer_data:
-                    success, msg = save_customer(nopol_input, nama_cust, telp_cust or "", alamat_cust or "")
+                    success, msg = save_customer(nopol_input, nama_cust, telp_cust or "", 
+                                                jenis_kendaraan, merk_kendaraan, ukuran_mobil)
                     if not success and "sudah terdaftar" not in msg.lower():
                         st.error(f"❌ Gagal menyimpan customer: {msg}")
                         st.stop()
+                else:
+                    # Update vehicle info for existing customer if changed
+                    if (jenis_kendaraan != jenis_kendaraan_existing or 
+                        merk_kendaraan != merk_kendaraan_existing or 
+                        ukuran_mobil != ukuran_mobil_existing):
+                        conn = sqlite3.connect(DB_NAME)
+                        c = conn.cursor()
+                        c.execute("""
+                            UPDATE customers 
+                            SET jenis_kendaraan = ?, merk_kendaraan = ?, ukuran_mobil = ?
+                            WHERE nopol = ?
+                        """, (jenis_kendaraan, merk_kendaraan, ukuran_mobil, nopol_input.upper()))
+                        conn.commit()
+                        conn.close()
                 
                 # Gunakan waktu sistem otomatis
                 now_wib = datetime.now(WIB)
                 tanggal_str = now_wib.strftime('%d-%m-%Y')
                 waktu_str = now_wib.strftime('%H:%M:%S')
+                
+                # Hitung harga dengan multiplier ukuran mobil
+                multiplier_map = get_ukuran_multiplier()
+                multiplier = multiplier_map.get(ukuran_mobil, 1.0) if ukuran_mobil else 1.0
+                harga_final = int(harga * multiplier)
                 
                 # Simpan transaksi
                 trans_data = {
@@ -1861,7 +2448,10 @@ def transaksi_page(role):
                     'waktu_masuk': waktu_str,
                     'waktu_selesai': '',
                     'paket_cuci': paket,
-                    'harga': harga,
+                    'harga': harga_final,
+                    'jenis_kendaraan': jenis_kendaraan,
+                    'merk_kendaraan': merk_kendaraan,
+                    'ukuran_mobil': ukuran_mobil,
                     'checklist_datang': json.dumps(selected_checks),
                     'checklist_selesai': '',
                     'qc_barang': qc_barang,
@@ -2267,6 +2857,16 @@ Terima kasih atas kepercayaan Anda! 🙏
                             st.write(f"📞 Telp: {telp_display}")
                             st.write(f"📦 Paket: {selected_hist['paket_cuci']}")
                             st.write(f"💰 Harga: Rp {selected_hist['harga']:,.0f}")
+                            
+                            # Info Kendaraan
+                            if selected_hist.get('jenis_kendaraan') or selected_hist.get('merk_kendaraan') or selected_hist.get('ukuran_mobil'):
+                                st.markdown("**🚗 Info Kendaraan**")
+                                if selected_hist.get('jenis_kendaraan'):
+                                    st.write(f"Jenis: {selected_hist['jenis_kendaraan']}")
+                                if selected_hist.get('merk_kendaraan'):
+                                    st.write(f"Merk: {selected_hist['merk_kendaraan']}")
+                                if selected_hist.get('ukuran_mobil'):
+                                    st.write(f"Ukuran: {selected_hist['ukuran_mobil']}")
                         
                         with col2:
                             st.markdown("**⏰ Waktu**")
@@ -2361,7 +2961,7 @@ Terima kasih atas kepercayaan Anda! 🙏
             st.warning("⚠️ Hanya Admin dan Supervisor yang dapat mengakses setting ini")
             return
         
-        subtab1, subtab2, subtab3 = st.tabs(["📦 Paket Cuci", "✅ Checklist Datang", "✓ Checklist Selesai"])
+        subtab1, subtab2, subtab3, subtab4 = st.tabs(["📦 Paket Cuci", "🚗 Multiplier Ukuran", "✅ Checklist Datang", "✓ Checklist Selesai"])
         
         with subtab1:
             st.markdown("##### 📦 Kelola Paket Cucian")
@@ -2437,6 +3037,67 @@ Terima kasih atas kepercayaan Anda! 🙏
                     st.error(msg)
         
         with subtab2:
+            st.markdown("##### 🚗 Multiplier Harga Berdasarkan Ukuran Mobil")
+            
+            st.info("ℹ️ Atur multiplier harga untuk setiap ukuran mobil. Harga paket akan dikalikan dengan multiplier ini.")
+            
+            # Load multiplier saat ini
+            multiplier_map = get_ukuran_multiplier()
+            
+            st.markdown("**Multiplier Saat Ini:**")
+            
+            # Form untuk edit multiplier
+            with st.form("multiplier_form"):
+                new_multiplier = {}
+                
+                ukuran_list = ["Kecil", "Sedang", "Besar", "Extra Besar"]
+                
+                for ukuran in ukuran_list:
+                    col1, col2, col3 = st.columns([2, 2, 3])
+                    with col1:
+                        st.markdown(f"**{ukuran}**")
+                    with col2:
+                        current_value = multiplier_map.get(ukuran, 1.0)
+                        new_value = st.number_input(
+                            f"Multiplier {ukuran}",
+                            value=float(current_value),
+                            min_value=0.5,
+                            max_value=5.0,
+                            step=0.1,
+                            key=f"mult_{ukuran}",
+                            label_visibility="collapsed"
+                        )
+                        new_multiplier[ukuran] = new_value
+                    with col3:
+                        # Contoh perhitungan
+                        example_price = 100000
+                        final_price = int(example_price * new_value)
+                        st.caption(f"Contoh: Rp 100.000 → Rp {final_price:,}")
+                
+                st.markdown("---")
+                
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    submit_multiplier = st.form_submit_button("💾 Simpan Multiplier", type="primary", use_container_width=True)
+                
+                if submit_multiplier:
+                    success, msg = update_setting("ukuran_multiplier", new_multiplier)
+                    if success:
+                        st.success("✅ Multiplier berhasil disimpan!")
+                        add_audit("multiplier_update", f"Update multiplier ukuran mobil")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
+            
+            # Info tambahan
+            st.markdown("---")
+            st.markdown("**ℹ️ Cara Kerja:**")
+            st.write("- Multiplier akan mengalikan harga paket dasar dengan nilai yang ditentukan")
+            st.write("- Contoh: Paket Rp 50.000 dengan multiplier 1.5 = Rp 75.000")
+            st.write("- Multiplier 1.0 = harga tetap (tidak ada tambahan)")
+        
+        with subtab3:
             st.markdown("##### ✅ Kelola Checklist Mobil Datang")
             
             checklist_datang = get_checklist_datang()
@@ -2487,7 +3148,7 @@ Terima kasih atas kepercayaan Anda! 🙏
                 else:
                     st.error(msg)
         
-        with subtab3:
+        with subtab4:
             st.markdown("##### ✓ Kelola Checklist QC Selesai")
             
             checklist_selesai = get_checklist_selesai()
@@ -3130,8 +3791,8 @@ def customer_page(role):
             
             if not df_display.empty:
                 # Display dengan styling lebih baik
-                df_show = df_display[['nopol', 'nama_customer', 'no_telp', 'alamat', 'created_at']].copy()
-                df_show.columns = ['🔖 Nopol', '👤 Nama', '📞 Telepon', '📍 Alamat', '📅 Terdaftar']
+                df_show = df_display[['nopol', 'nama_customer', 'no_telp', 'created_at']].copy()
+                df_show.columns = ['🔖 Nopol', '👤 Nama', '📞 Telepon', '📅 Terdaftar']
                 
                 st.dataframe(
                     df_show,
@@ -3140,8 +3801,7 @@ def customer_page(role):
                     column_config={
                         "🔖 Nopol": st.column_config.TextColumn(width="small"),
                         "👤 Nama": st.column_config.TextColumn(width="medium"),
-                        "📞 Telepon": st.column_config.TextColumn(width="small"),
-                        "📍 Alamat": st.column_config.TextColumn(width="large"),
+                        "📞 Telepon": st.column_config.TextColumn(width="medium"),
                         "📅 Terdaftar": st.column_config.TextColumn(width="small")
                     }
                 )
@@ -3179,7 +3839,6 @@ def customer_page(role):
             with col2:
                 telp = st.text_input("📞 No. Telepon", placeholder="08xxxxxxxxxx",
                                     help="Format: 08xxx atau +62xxx")
-                alamat = st.text_area("📍 Alamat", placeholder="Alamat lengkap customer", height=100)
             
             submitted = st.form_submit_button("💾 Simpan Customer", type="primary", use_container_width=True)
             
@@ -3187,7 +3846,7 @@ def customer_page(role):
                 if not nopol or not nama:
                     st.error("❌ Nopol dan Nama wajib diisi")
                 else:
-                    success, msg = save_customer(nopol, nama, telp, alamat)
+                    success, msg = save_customer(nopol, nama, telp)
                     if success:
                         add_audit("customer_baru", f"Nopol: {nopol}, Nama: {nama}")
                         st.success(f"✅ {msg}")
@@ -4451,48 +5110,207 @@ def audit_trail_page():
         st.info("Belum ada data audit trail.")
 
 def user_setting_page():
-    st.header("⚙️ User Setting")
-    st.info("Fitur ganti password dan nama user.")
+    st.markdown("""
+    <style>
+    .user-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        color: white;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+    }
+    .user-header h1 {
+        margin: 0;
+        font-size: 2rem;
+        font-weight: 800;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown('''
+    <div class="user-header">
+        <h1>👤 User Management</h1>
+    </div>
+    ''', unsafe_allow_html=True)
+    
     uname = st.session_state.get("login_user", "-")
     role = st.session_state.get("login_role", "-")
-    st.write(f"**Username:** {uname}")
-    st.write(f"**Role:** {role}")
     
-    st.markdown("---")
-    
-    with st.form("user_setting_form"):
-        st.subheader("Ubah Informasi")
-        new_name = st.text_input("Ganti Nama Tampilan", value=uname)
-        new_pass = st.text_input("Ganti Password", type="password", placeholder="Kosongkan jika tidak ingin mengubah")
-        confirm_pass = st.text_input("Konfirmasi Password Baru", type="password")
+    # Admin-only tabs
+    if role == "Admin":
+        tab1, tab2, tab3 = st.tabs(["👥 Kelola User", "➕ Tambah User", "🔐 Ganti Password Saya"])
         
-        submitted = st.form_submit_button("💾 Simpan Perubahan", type="primary", use_container_width=True)
-        
-        if submitted:
-            changes = []
+        with tab1:
+            st.subheader("📋 Daftar User")
+            df_users = get_all_users()
             
-            if new_name and new_name != uname:
-                st.session_state["login_user"] = new_name
-                changes.append(f"username: {uname} → {new_name}")
-            
-            if new_pass:
-                if new_pass != confirm_pass:
-                    st.error("❌ Konfirmasi password tidak cocok!")
-                    st.stop()
-                elif len(new_pass) < 6:
-                    st.error("❌ Password minimal 6 karakter!")
-                    st.stop()
-                else:
-                    USERS[uname]["password"] = new_pass
-                    changes.append("password diubah")
-            
-            if changes:
-                add_audit("update_user_setting", f"User setting: {', '.join(changes)}")
-                st.success("✅ Perubahan user disimpan (hanya berlaku sesi ini)")
-                st.balloons()
-                st.rerun()
+            if not df_users.empty:
+                # Display users
+                st.dataframe(
+                    df_users,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "id": st.column_config.NumberColumn("ID", width="small"),
+                        "username": st.column_config.TextColumn("Username", width="medium"),
+                        "role": st.column_config.TextColumn("Role", width="small"),
+                        "created_at": st.column_config.TextColumn("Dibuat", width="medium"),
+                        "created_by": st.column_config.TextColumn("Oleh", width="small"),
+                        "last_login": st.column_config.TextColumn("Login Terakhir", width="medium")
+                    }
+                )
+                
+                st.markdown("---")
+                st.subheader("✏️ Edit User")
+                
+                # Select user to edit
+                usernames = df_users['username'].tolist()
+                selected_user = st.selectbox("Pilih User", usernames, key="edit_user_select")
+                
+                if selected_user:
+                    user_data = get_user_from_db(selected_user)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.info(f"**Username:** {selected_user}")
+                        st.info(f"**Role Saat Ini:** {user_data['role']}")
+                    
+                    with col2:
+                        new_role = st.selectbox(
+                            "Ganti Role",
+                            ["Admin", "Supervisor", "Kasir"],
+                            index=["Admin", "Supervisor", "Kasir"].index(user_data['role'])
+                        )
+                        new_password = st.text_input("Password Baru (opsional)", type="password", 
+                                                    placeholder="Kosongkan jika tidak ingin mengubah")
+                    
+                    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+                    
+                    with col_btn2:
+                        if st.button("💾 Update User", type="primary", use_container_width=True):
+                            if new_password and len(new_password) < 6:
+                                st.error("❌ Password minimal 6 karakter!")
+                            else:
+                                success, msg = update_user(selected_user, new_password if new_password else None, new_role)
+                                if success:
+                                    add_audit("update_user", f"User {selected_user}: role → {new_role}" + 
+                                             (", password diubah" if new_password else ""))
+                                    st.success(f"✅ {msg}")
+                                    st.balloons()
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+                    
+                    with col_btn3:
+                        if selected_user != "admin" and selected_user != uname:
+                            if st.button("🗑️ Hapus User", use_container_width=True):
+                                success, msg = delete_user(selected_user)
+                                if success:
+                                    add_audit("delete_user", f"User {selected_user} dihapus")
+                                    st.success(f"✅ {msg}")
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ {msg}")
+                        else:
+                            st.caption("⚠️ Tidak dapat menghapus user ini")
             else:
-                st.info("ℹ️ Tidak ada perubahan.")
+                st.warning("⚠️ Tidak ada user dalam database")
+        
+        with tab2:
+            st.subheader("➕ Tambah User Baru")
+            
+            with st.form("add_user_form"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    new_username = st.text_input("Username *", placeholder="username_baru").lower()
+                    new_user_password = st.text_input("Password *", type="password", placeholder="Min. 6 karakter")
+                
+                with col2:
+                    new_user_role = st.selectbox("Role *", ["Admin", "Supervisor", "Kasir"])
+                    confirm_password = st.text_input("Konfirmasi Password *", type="password")
+                
+                submitted = st.form_submit_button("💾 Tambah User", type="primary", use_container_width=True)
+                
+                if submitted:
+                    if not new_username or not new_user_password:
+                        st.error("❌ Username dan Password wajib diisi!")
+                    elif len(new_user_password) < 6:
+                        st.error("❌ Password minimal 6 karakter!")
+                    elif new_user_password != confirm_password:
+                        st.error("❌ Konfirmasi password tidak cocok!")
+                    else:
+                        success, msg = add_user(new_username, new_user_password, new_user_role, uname)
+                        if success:
+                            add_audit("add_user", f"User baru: {new_username} ({new_user_role})")
+                            st.success(f"✅ {msg}")
+                            st.balloons()
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {msg}")
+        
+        with tab3:
+            st.subheader("🔐 Ganti Password Saya")
+            st.info(f"User: **{uname}** | Role: **{role}**")
+            
+            with st.form("change_my_password_form"):
+                current_password = st.text_input("Password Saat Ini", type="password")
+                my_new_password = st.text_input("Password Baru", type="password", placeholder="Min. 6 karakter")
+                my_confirm_password = st.text_input("Konfirmasi Password Baru", type="password")
+                
+                submitted = st.form_submit_button("💾 Ganti Password", type="primary", use_container_width=True)
+                
+                if submitted:
+                    user_data = get_user_from_db(uname)
+                    if not user_data:
+                        st.error("❌ User tidak ditemukan!")
+                    elif current_password != user_data['password']:
+                        st.error("❌ Password saat ini salah!")
+                    elif len(my_new_password) < 6:
+                        st.error("❌ Password baru minimal 6 karakter!")
+                    elif my_new_password != my_confirm_password:
+                        st.error("❌ Konfirmasi password tidak cocok!")
+                    else:
+                        success, msg = update_user(uname, my_new_password, None)
+                        if success:
+                            add_audit("change_password", "Password diubah")
+                            st.success("✅ Password berhasil diubah!")
+                            st.balloons()
+                        else:
+                            st.error(f"❌ {msg}")
+    
+    else:
+        # Non-admin users can only change their own password
+        st.subheader("🔐 Ganti Password")
+        st.info(f"User: **{uname}** | Role: **{role}**")
+        
+        with st.form("change_password_form"):
+            current_password = st.text_input("Password Saat Ini", type="password")
+            new_password = st.text_input("Password Baru", type="password", placeholder="Min. 6 karakter")
+            confirm_password = st.text_input("Konfirmasi Password Baru", type="password")
+            
+            submitted = st.form_submit_button("💾 Ganti Password", type="primary", use_container_width=True)
+            
+            if submitted:
+                user_data = get_user_from_db(uname)
+                if not user_data:
+                    st.error("❌ User tidak ditemukan!")
+                elif current_password != user_data['password']:
+                    st.error("❌ Password saat ini salah!")
+                elif len(new_password) < 6:
+                    st.error("❌ Password baru minimal 6 karakter!")
+                elif new_password != confirm_password:
+                    st.error("❌ Konfirmasi password tidak cocok!")
+                else:
+                    success, msg = update_user(uname, new_password, None)
+                    if success:
+                        add_audit("change_password", "Password diubah")
+                        st.success("✅ Password berhasil diubah!")
+                        st.balloons()
+                    else:
+                        st.error(f"❌ {msg}")
 
 def review_customer_page():
     st.markdown("""
@@ -4710,6 +5528,518 @@ def review_customer_page():
         else:
             st.info("📭 Belum ada data review untuk ditampilkan")
 
+def payroll_page(role):
+    """Halaman Payroll - hanya bisa diakses Admin dan Kasir"""
+    st.markdown('<p class="big-title">💼 Sistem Payroll</p>', unsafe_allow_html=True)
+    st.markdown("---")
+    
+    # Tab untuk berbagai fitur payroll
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["👥 Data Karyawan", "📋 Presensi", "💰 Hitung Gaji", "📊 Riwayat Gaji", "⚙️ Setting Shift"])
+    
+    with tab1:
+        st.markdown("### 👥 Manajemen Data Karyawan")
+        
+        col1, col2 = st.columns([2, 1])
+        
+        with col1:
+            # Display employees
+            employees = get_all_employees()
+            if employees:
+                df_emp = pd.DataFrame(employees)
+                df_emp['gaji_display'] = df_emp.apply(
+                    lambda x: f"Rp {x['gaji_tetap']:,.0f}" if x['role_karyawan'] in ['Kasir', 'Supervisor'] else f"{x['shift']} ({get_shift_settings()[0 if x['shift']=='Pagi' else 1]['persentase_gaji']}% dari pendapatan)",
+                    axis=1
+                )
+                
+                st.dataframe(
+                    df_emp[['id', 'nama', 'role_karyawan', 'gaji_display', 'shift', 'jam_masuk_default', 'jam_pulang_default', 'status', 'no_telp']],
+                    use_container_width=True
+                )
+            else:
+                st.info("Belum ada data karyawan")
+        
+        with col2:
+            st.markdown("#### ➕ Tambah Karyawan")
+            with st.form("add_employee_form"):
+                nama = st.text_input("Nama Lengkap*")
+                role_karyawan = st.selectbox("Role Karyawan*", ["Worker Cuci Mobil", "Kasir", "Supervisor"])
+                
+                if role_karyawan in ["Kasir", "Supervisor"]:
+                    gaji_tetap = st.number_input("Gaji Tetap/Minggu (Rp)*", min_value=0, step=100000, value=500000)
+                    shift = st.selectbox("Shift", ["Pagi", "Malam"])
+                else:
+                    gaji_tetap = 0
+                    shift = st.selectbox("Shift*", ["Pagi", "Malam"])
+                    st.info(f"💡 Gaji worker mengikuti persentase dari pendapatan cuci mobil")
+                
+                jam_masuk = st.time_input("Jam Masuk Default", value=time(8, 0))
+                jam_pulang = st.time_input("Jam Pulang Default", value=time(17, 0))
+                no_telp = st.text_input("No Telepon")
+                
+                submit = st.form_submit_button("Simpan Karyawan", use_container_width=True)
+                
+                if submit:
+                    if nama and role_karyawan:
+                        add_employee(
+                            nama, role_karyawan, gaji_tetap, shift,
+                            jam_masuk.strftime("%H:%M"), jam_pulang.strftime("%H:%M"),
+                            no_telp, st.session_state.get('login_user')
+                        )
+                        add_audit("add_employee", f"Tambah karyawan: {nama} - {role_karyawan}")
+                        st.success(f"✅ Karyawan {nama} berhasil ditambahkan!")
+                        st.rerun()
+                    else:
+                        st.error("Nama dan role karyawan harus diisi!")
+        
+        # Edit/Delete employee
+        if employees:
+            st.markdown("---")
+            st.markdown("#### ✏️ Edit / Hapus Karyawan")
+            
+            emp_names = {f"{e['id']} - {e['nama']}": e for e in employees}
+            selected_emp_name = st.selectbox("Pilih Karyawan", list(emp_names.keys()))
+            
+            if selected_emp_name:
+                emp = emp_names[selected_emp_name]
+                
+                col_edit, col_delete = st.columns([3, 1])
+                
+                with col_edit:
+                    with st.form("edit_employee_form"):
+                        st.markdown(f"**Edit Data: {emp['nama']}**")
+                        
+                        edit_nama = st.text_input("Nama", value=emp['nama'])
+                        edit_role = st.selectbox("Role", ["Worker Cuci Mobil", "Kasir", "Supervisor"], 
+                                                index=["Worker Cuci Mobil", "Kasir", "Supervisor"].index(emp['role_karyawan']))
+                        
+                        if edit_role in ["Kasir", "Supervisor"]:
+                            edit_gaji = st.number_input("Gaji Tetap/Minggu (Rp)", min_value=0, step=100000, value=emp['gaji_tetap'])
+                        else:
+                            edit_gaji = 0
+                        
+                        edit_shift = st.selectbox("Shift", ["Pagi", "Malam"], index=["Pagi", "Malam"].index(emp['shift']) if emp['shift'] else 0)
+                        edit_jam_masuk = st.time_input("Jam Masuk", value=datetime.strptime(emp['jam_masuk_default'], "%H:%M").time())
+                        edit_jam_pulang = st.time_input("Jam Pulang", value=datetime.strptime(emp['jam_pulang_default'], "%H:%M").time())
+                        edit_no_telp = st.text_input("No Telepon", value=emp['no_telp'] or "")
+                        edit_status = st.selectbox("Status", ["Aktif", "Nonaktif"], index=["Aktif", "Nonaktif"].index(emp['status']))
+                        
+                        col_btn1, col_btn2 = st.columns(2)
+                        with col_btn1:
+                            submit_edit = st.form_submit_button("💾 Update Data", use_container_width=True)
+                        with col_btn2:
+                            cancel_edit = st.form_submit_button("❌ Batal", use_container_width=True)
+                        
+                        if submit_edit:
+                            update_employee(
+                                emp['id'], edit_nama, edit_role, edit_gaji, edit_shift,
+                                edit_jam_masuk.strftime("%H:%M"), edit_jam_pulang.strftime("%H:%M"),
+                                edit_no_telp, edit_status
+                            )
+                            add_audit("update_employee", f"Update karyawan: {edit_nama}")
+                            st.success("✅ Data karyawan berhasil diupdate!")
+                            st.rerun()
+                
+                with col_delete:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("🗑️ Hapus Karyawan", use_container_width=True, type="secondary"):
+                        delete_employee(emp['id'])
+                        add_audit("delete_employee", f"Hapus karyawan: {emp['nama']}")
+                        st.success(f"✅ Karyawan {emp['nama']} berhasil dihapus!")
+                        st.rerun()
+    
+    with tab2:
+        st.markdown("### 📋 Presensi Karyawan")
+        
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            st.markdown("#### ➕ Input Presensi")
+            
+            employees = get_all_employees()
+            active_employees = [e for e in employees if e['status'] == 'Aktif']
+            
+            if active_employees:
+                with st.form("attendance_form"):
+                    emp_options = {f"{e['nama']} ({e['role_karyawan']})": e for e in active_employees}
+                    selected_emp = st.selectbox("Pilih Karyawan*", list(emp_options.keys()))
+                    
+                    emp_data = emp_options[selected_emp]
+                    
+                    tanggal = st.date_input("Tanggal*", value=datetime.now(WIB))
+                    
+                    col_jam1, col_jam2 = st.columns(2)
+                    with col_jam1:
+                        default_masuk = datetime.strptime(emp_data['jam_masuk_default'], "%H:%M").time()
+                        jam_masuk = st.time_input("Jam Masuk*", value=default_masuk)
+                    with col_jam2:
+                        default_pulang = datetime.strptime(emp_data['jam_pulang_default'], "%H:%M").time()
+                        jam_pulang = st.time_input("Jam Pulang", value=default_pulang)
+                    
+                    shift = st.selectbox("Shift*", ["Pagi", "Malam"], index=["Pagi", "Malam"].index(emp_data['shift']) if emp_data['shift'] else 0)
+                    status = st.selectbox("Status Kehadiran*", ["Hadir", "Terlambat", "Pulang Awal", "Izin", "Sakit", "Alpha"])
+                    catatan = st.text_area("Catatan")
+                    
+                    submit_attendance = st.form_submit_button("💾 Simpan Presensi", use_container_width=True)
+                    
+                    if submit_attendance:
+                        add_attendance(
+                            emp_data['id'],
+                            tanggal.strftime("%d-%m-%Y"),
+                            jam_masuk.strftime("%H:%M"),
+                            jam_pulang.strftime("%H:%M") if jam_pulang else None,
+                            shift,
+                            status,
+                            catatan,
+                            st.session_state.get('login_user')
+                        )
+                        add_audit("add_attendance", f"Presensi: {emp_data['nama']} - {tanggal.strftime('%d-%m-%Y')}")
+                        st.success(f"✅ Presensi {emp_data['nama']} berhasil disimpan!")
+                        st.rerun()
+            else:
+                st.warning("⚠️ Belum ada karyawan aktif")
+        
+        with col2:
+            st.markdown("#### 📊 Data Presensi")
+            
+            # Filter tanggal
+            col_date1, col_date2 = st.columns(2)
+            with col_date1:
+                start_date = st.date_input("Dari Tanggal", value=datetime.now(WIB) - timedelta(days=7))
+            with col_date2:
+                end_date = st.date_input("Sampai Tanggal", value=datetime.now(WIB))
+            
+            attendance_data = get_attendance_by_date_range(
+                start_date.strftime("%d-%m-%Y"),
+                end_date.strftime("%d-%m-%Y")
+            )
+            
+            if attendance_data:
+                df_att = pd.DataFrame(attendance_data)
+                st.dataframe(
+                    df_att[['tanggal', 'nama', 'role_karyawan', 'shift', 'jam_masuk', 'jam_pulang', 'status', 'catatan']],
+                    use_container_width=True
+                )
+                
+                # Summary
+                st.markdown("---")
+                col_sum1, col_sum2, col_sum3 = st.columns(3)
+                with col_sum1:
+                    total_hadir = len(df_att[df_att['status'] == 'Hadir'])
+                    st.metric("✅ Total Hadir", total_hadir)
+                with col_sum2:
+                    total_terlambat = len(df_att[df_att['status'] == 'Terlambat'])
+                    st.metric("⏰ Terlambat", total_terlambat)
+                with col_sum3:
+                    total_izin = len(df_att[df_att['status'].isin(['Izin', 'Sakit'])])
+                    st.metric("📝 Izin/Sakit", total_izin)
+            else:
+                st.info("📭 Belum ada data presensi untuk periode ini")
+    
+    with tab3:
+        st.markdown("### 💰 Perhitungan Gaji Mingguan")
+        
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.markdown("#### 🧮 Hitung Gaji Periode")
+            
+            with st.form("calculate_salary_form"):
+                # Pilih periode
+                col_p1, col_p2 = st.columns(2)
+                with col_p1:
+                    periode_awal = st.date_input("Periode Awal*", value=datetime.now(WIB) - timedelta(days=7))
+                with col_p2:
+                    periode_akhir = st.date_input("Periode Akhir*", value=datetime.now(WIB))
+                
+                # Pilih karyawan
+                employees = get_all_employees()
+                active_employees = [e for e in employees if e['status'] == 'Aktif']
+                
+                if active_employees:
+                    emp_options = {f"{e['id']} - {e['nama']} ({e['role_karyawan']})": e for e in active_employees}
+                    selected_emp = st.selectbox("Pilih Karyawan*", list(emp_options.keys()))
+                    emp_data = emp_options[selected_emp]
+                    
+                    st.info(f"**Role:** {emp_data['role_karyawan']}\n\n**Shift:** {emp_data['shift']}")
+                    
+                    # Bonus dan potongan
+                    bonus = st.number_input("Bonus (Rp)", min_value=0, step=50000, value=0)
+                    potongan = st.number_input("Potongan (Rp)", min_value=0, step=50000, value=0)
+                    catatan = st.text_area("Catatan")
+                    
+                    calculate_btn = st.form_submit_button("🧮 Hitung Gaji", use_container_width=True)
+                    
+                    if calculate_btn:
+                        # Get attendance data untuk periode ini
+                        attendance_data = get_attendance_by_date_range(
+                            periode_awal.strftime("%d-%m-%Y"),
+                            periode_akhir.strftime("%d-%m-%Y")
+                        )
+                        
+                        # Filter by employee
+                        emp_attendance = [a for a in attendance_data if a['employee_id'] == emp_data['id']]
+                        total_hari_kerja = len([a for a in emp_attendance if a['status'] in ['Hadir', 'Terlambat', 'Pulang Awal']])
+                        
+                        # Calculate salary
+                        if emp_data['role_karyawan'] in ['Kasir', 'Supervisor']:
+                            # Gaji tetap
+                            total_gaji = emp_data['gaji_tetap']
+                        else:
+                            # Worker - hitung berdasarkan pendapatan
+                            total_gaji = 0
+                            for att in emp_attendance:
+                                if att['status'] in ['Hadir', 'Terlambat', 'Pulang Awal']:
+                                    salary = calculate_worker_salary(
+                                        emp_data['id'],
+                                        att['tanggal'],
+                                        att['jam_masuk'],
+                                        att['jam_pulang'],
+                                        att['shift']
+                                    )
+                                    total_gaji += salary
+                        
+                        gaji_bersih = total_gaji + bonus - potongan
+                        
+                        # Display calculation
+                        st.session_state['calculated_salary'] = {
+                            'employee_id': emp_data['id'],
+                            'nama': emp_data['nama'],
+                            'periode_awal': periode_awal.strftime("%d-%m-%Y"),
+                            'periode_akhir': periode_akhir.strftime("%d-%m-%Y"),
+                            'total_hari_kerja': total_hari_kerja,
+                            'total_gaji': total_gaji,
+                            'bonus': bonus,
+                            'potongan': potongan,
+                            'gaji_bersih': gaji_bersih,
+                            'catatan': catatan
+                        }
+                        st.rerun()
+                else:
+                    st.warning("⚠️ Belum ada karyawan aktif")
+        
+        with col2:
+            st.markdown("#### 📋 Hasil Perhitungan")
+            
+            if 'calculated_salary' in st.session_state:
+                calc = st.session_state['calculated_salary']
+                
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; color: white;">
+                    <h3 style="margin:0; color: white;">💼 {calc['nama']}</h3>
+                    <p style="margin:5px 0;">Periode: {calc['periode_awal']} s/d {calc['periode_akhir']}</p>
+                    <p style="margin:5px 0;">Hari Kerja: {calc['total_hari_kerja']} hari</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    st.metric("💵 Total Gaji", f"Rp {calc['total_gaji']:,.0f}")
+                    st.metric("🎁 Bonus", f"Rp {calc['bonus']:,.0f}")
+                with col_r2:
+                    st.metric("✂️ Potongan", f"Rp {calc['potongan']:,.0f}")
+                    st.metric("💰 Gaji Bersih", f"Rp {calc['gaji_bersih']:,.0f}", delta=None)
+                
+                if calc['catatan']:
+                    st.info(f"📝 Catatan: {calc['catatan']}")
+                
+                st.markdown("---")
+                
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.button("💾 Simpan ke Payroll", use_container_width=True, type="primary"):
+                        add_payroll(
+                            calc['employee_id'],
+                            calc['periode_awal'],
+                            calc['periode_akhir'],
+                            calc['total_hari_kerja'],
+                            calc['total_gaji'],
+                            calc['bonus'],
+                            calc['potongan'],
+                            calc['gaji_bersih'],
+                            'Pending',
+                            None,
+                            calc['catatan'],
+                            st.session_state.get('login_user')
+                        )
+                        add_audit("add_payroll", f"Payroll: {calc['nama']} - Rp {calc['gaji_bersih']:,.0f}")
+                        st.success("✅ Payroll berhasil disimpan!")
+                        del st.session_state['calculated_salary']
+                        st.rerun()
+                
+                with col_btn2:
+                    if st.button("🔄 Hitung Ulang", use_container_width=True):
+                        del st.session_state['calculated_salary']
+                        st.rerun()
+            else:
+                st.info("💡 Silakan hitung gaji terlebih dahulu")
+    
+    with tab4:
+        st.markdown("### 📊 Riwayat Pembayaran Gaji")
+        
+        # Filter
+        col_f1, col_f2 = st.columns([2, 1])
+        with col_f1:
+            employees = get_all_employees()
+            emp_filter_options = ["Semua Karyawan"] + [f"{e['id']} - {e['nama']}" for e in employees]
+            selected_filter = st.selectbox("Filter Karyawan", emp_filter_options)
+        
+        with col_f2:
+            status_filter = st.selectbox("Status", ["Semua", "Pending", "Dibayar"])
+        
+        # Get payroll data
+        if selected_filter == "Semua Karyawan":
+            payroll_data = get_payroll_history()
+        else:
+            emp_id = int(selected_filter.split(" - ")[0])
+            payroll_data = get_payroll_history(emp_id)
+        
+        # Filter by status
+        if status_filter != "Semua":
+            payroll_data = [p for p in payroll_data if p['status'] == status_filter]
+        
+        if payroll_data:
+            # Summary cards
+            col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
+            
+            total_pending = sum(p['gaji_bersih'] for p in payroll_data if p['status'] == 'Pending')
+            total_dibayar = sum(p['gaji_bersih'] for p in payroll_data if p['status'] == 'Dibayar')
+            
+            with col_sum1:
+                st.metric("📋 Total Record", len(payroll_data))
+            with col_sum2:
+                pending_count = len([p for p in payroll_data if p['status'] == 'Pending'])
+                st.metric("⏳ Pending", pending_count)
+            with col_sum3:
+                st.metric("💰 Total Pending", f"Rp {total_pending:,.0f}")
+            with col_sum4:
+                st.metric("✅ Total Dibayar", f"Rp {total_dibayar:,.0f}")
+            
+            st.markdown("---")
+            
+            # Display payroll table
+            for idx, p in enumerate(payroll_data):
+                with st.expander(f"💼 {p['nama']} - {p['periode_awal']} s/d {p['periode_akhir']} | Rp {p['gaji_bersih']:,.0f} | {p['status']}"):
+                    col_p1, col_p2, col_p3 = st.columns([2, 2, 1])
+                    
+                    with col_p1:
+                        st.write(f"**Nama:** {p['nama']}")
+                        st.write(f"**Role:** {p['role_karyawan']}")
+                        st.write(f"**Periode:** {p['periode_awal']} - {p['periode_akhir']}")
+                        st.write(f"**Hari Kerja:** {p['total_hari_kerja']} hari")
+                    
+                    with col_p2:
+                        st.write(f"**Total Gaji:** Rp {p['total_gaji']:,.0f}")
+                        st.write(f"**Bonus:** Rp {p['bonus']:,.0f}")
+                        st.write(f"**Potongan:** Rp {p['potongan']:,.0f}")
+                        st.write(f"**Gaji Bersih:** Rp {p['gaji_bersih']:,.0f}")
+                    
+                    with col_p3:
+                        st.write(f"**Status:** {p['status']}")
+                        if p['tanggal_bayar']:
+                            st.write(f"**Tgl Bayar:** {p['tanggal_bayar']}")
+                        st.write(f"**Dibuat:** {p['created_at']}")
+                    
+                    if p['catatan']:
+                        st.info(f"📝 {p['catatan']}")
+                    
+                    # Action buttons
+                    if p['status'] == 'Pending':
+                        if st.button(f"✅ Tandai Sudah Dibayar", key=f"pay_{p['id']}", use_container_width=True):
+                            tanggal_bayar = datetime.now(WIB).strftime("%d-%m-%Y %H:%M:%S")
+                            update_payroll_status(p['id'], 'Dibayar', tanggal_bayar)
+                            add_audit("update_payroll", f"Pembayaran gaji: {p['nama']} - Rp {p['gaji_bersih']:,.0f}")
+                            st.success(f"✅ Gaji {p['nama']} sudah ditandai dibayar!")
+                            st.rerun()
+        else:
+            st.info("📭 Belum ada data payroll")
+    
+    with tab5:
+        st.markdown("### ⚙️ Setting Shift & Persentase Gaji")
+        
+        shifts = get_shift_settings()
+        
+        if shifts:
+            col1, col2 = st.columns(2)
+            
+            for idx, shift in enumerate(shifts):
+                with col1 if idx == 0 else col2:
+                    st.markdown(f"#### {shift['shift_name']}")
+                    
+                    with st.form(f"shift_form_{shift['id']}"):
+                        jam_mulai = st.time_input(
+                            "Jam Mulai",
+                            value=datetime.strptime(shift['jam_mulai'], "%H:%M").time(),
+                            key=f"start_{shift['id']}"
+                        )
+                        jam_selesai = st.time_input(
+                            "Jam Selesai",
+                            value=datetime.strptime(shift['jam_selesai'], "%H:%M").time(),
+                            key=f"end_{shift['id']}"
+                        )
+                        persentase = st.slider(
+                            "Persentase Gaji (%)",
+                            min_value=10.0,
+                            max_value=60.0,
+                            value=shift['persentase_gaji'],
+                            step=0.5,
+                            key=f"pct_{shift['id']}"
+                        )
+                        
+                        st.info(f"💡 Worker shift {shift['shift_name']} akan mendapat **{persentase}%** dari total pendapatan cuci mobil selama periode kerja mereka.")
+                        
+                        # Example calculation
+                        example_revenue = 1000000
+                        example_salary = int(example_revenue * persentase / 100)
+                        st.success(f"📊 Contoh: Pendapatan Rp {example_revenue:,.0f} → Gaji Rp {example_salary:,.0f}")
+                        
+                        submit_shift = st.form_submit_button("💾 Update Setting", use_container_width=True)
+                        
+                        if submit_shift:
+                            update_shift_settings(
+                                shift['shift_name'],
+                                jam_mulai.strftime("%H:%M"),
+                                jam_selesai.strftime("%H:%M"),
+                                persentase
+                            )
+                            add_audit("update_shift", f"Update shift {shift['shift_name']}: {persentase}%")
+                            st.success(f"✅ Setting shift {shift['shift_name']} berhasil diupdate!")
+                            st.rerun()
+        
+        st.markdown("---")
+        st.markdown("### 📖 Panduan Sistem Payroll")
+        
+        st.markdown("""
+        #### 💡 Cara Kerja Sistem:
+        
+        **1. Karyawan dengan Gaji Tetap (Kasir & Supervisor):**
+        - Gaji dihitung per minggu dengan nominal tetap
+        - Tidak terpengaruh pendapatan harian
+        
+        **2. Worker Cuci Mobil:**
+        - Gaji dihitung dari persentase pendapatan cuci mobil
+        - Shift Pagi (8:00-17:00): 35% dari total pendapatan
+        - Shift Malam (17:00-08:00): 45% dari total pendapatan
+        - Gaji dihitung berdasarkan jam kerja aktual
+        
+        **3. Presensi:**
+        - Kasir input jam masuk dan pulang karyawan
+        - Jika pulang lebih awal, gaji hanya dihitung sampai jam pulang
+        - Jika terlambat, gaji dihitung dari jam masuk aktual
+        
+        **4. Perhitungan Gaji Mingguan:**
+        - Pilih periode (biasanya 7 hari)
+        - Sistem otomatis menghitung berdasarkan presensi
+        - Bisa tambah bonus atau potongan
+        - Simpan ke payroll dan tandai sudah dibayar
+        
+        **5. Riwayat:**
+        - Semua pembayaran tercatat
+        - Status: Pending atau Sudah Dibayar
+        - Bisa filter per karyawan
+        """)
+
 def main():
     st.set_page_config(page_title="TIME AUTOCARE - Detailing & Ceramic Coating", layout="wide", page_icon="🚗")
     
@@ -4722,9 +6052,16 @@ def main():
     
     role = st.session_state.get("login_role", "Kasir")
     
-    # Initialize menu state
+    # Initialize menu state based on role
     if "menu" not in st.session_state:
-        st.session_state["menu"] = "Dashboard"
+        if role == "Admin":
+            st.session_state["menu"] = "Dashboard"
+        elif role == "Supervisor":
+            st.session_state["menu"] = "Cuci Mobil"
+        elif role == "Kasir":
+            st.session_state["menu"] = "Kasir"
+        else:
+            st.session_state["menu"] = "Dashboard"
     
     # Custom sidebar styling
     st.sidebar.markdown("""
@@ -4820,18 +6157,40 @@ def main():
     st.sidebar.markdown('<p class="menu-title">🚗 TIME AUTOCARE</p>', unsafe_allow_html=True)
     
     
-    # Menu items
-    menu_items = [
-        ("Dashboard", "📊"),
-        ("Cuci Mobil", "🚗"),
-        ("Kasir", "💰"),
-        ("Customer", "👥"),
-        ("Review Customer", "⭐"),
-        ("Laporan", "📊"),
-        ("Setting Toko", "⚙️"),
-        ("Audit Trail", "📜"),
-        ("User Setting", "👤")
-    ]
+    # Menu items based on role
+    if role == "Admin":
+        # Admin has access to everything
+        menu_items = [
+            ("Dashboard", "📊"),
+            ("Cuci Mobil", "🚗"),
+            ("Kasir", "💰"),
+            ("Payroll", "💼"),
+            ("Customer", "👥"),
+            ("Review Customer", "⭐"),
+            ("Laporan", "📊"),
+            ("Setting Toko", "⚙️"),
+            ("Audit Trail", "📜"),
+            ("User Setting", "👤")
+        ]
+    elif role == "Supervisor":
+        # Supervisor only has access to Cuci Mobil
+        menu_items = [
+            ("Cuci Mobil", "🚗")
+        ]
+    elif role == "Kasir":
+        # Kasir has access to Kasir and Payroll
+        menu_items = [
+            ("Kasir", "💰"),
+            ("Payroll", "💼")
+        ]
+    else:
+        # Default: no access
+        menu_items = []
+    
+    # Set default menu based on role if not set
+    if "menu" not in st.session_state or st.session_state["menu"] not in [m[0] for m in menu_items]:
+        if menu_items:
+            st.session_state["menu"] = menu_items[0][0]
     
     for menu_name, icon in menu_items:
         button_type = "secondary" if st.session_state["menu"] == menu_name else "primary"
@@ -4851,6 +6210,23 @@ def main():
     
     menu = st.session_state["menu"]
 
+    # Access control check
+    def has_access(menu_name, user_role):
+        """Check if user role has access to specific menu"""
+        if user_role == "Admin":
+            return True  # Admin has access to everything
+        elif user_role == "Supervisor":
+            return menu_name in ["Cuci Mobil"]
+        elif user_role == "Kasir":
+            return menu_name in ["Kasir", "Payroll"]
+        return False
+    
+    # Verify access before showing page
+    if not has_access(menu, role):
+        st.error(f"⛔ Akses Ditolak! Role '{role}' tidak memiliki akses ke menu '{menu}'.")
+        st.info("Silakan hubungi administrator untuk mendapatkan akses.")
+        return
+
     # Route to pages
     if menu == "Dashboard":
         dashboard_page(role)
@@ -4858,6 +6234,8 @@ def main():
         transaksi_page(role)
     elif menu == "Kasir":
         kasir_page(role)
+    elif menu == "Payroll":
+        payroll_page(role)
     elif menu == "Customer":
         customer_page(role)
     elif menu == "Laporan":
