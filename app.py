@@ -776,15 +776,16 @@ def get_attendance_by_date_range(start_date, end_date):
     return attendance
 
 def get_wash_revenue_by_time_range(start_datetime, end_datetime):
-    """Get total wash revenue between datetime range"""
+    """Get total WASH revenue between datetime range (excludes coffee shop)"""
     conn = sqlite3.connect('car_wash.db')
     c = conn.cursor()
     
-    # Query untuk mendapatkan total pendapatan dalam range waktu
+    # Query untuk mendapatkan total pendapatan CUCI MOBIL saja (tanpa coffee)
+    # Hanya dari wash_transactions, bukan dari kasir_transactions coffee
     c.execute("""
-        SELECT COALESCE(SUM(harga_final), 0) as total
+        SELECT COALESCE(SUM(harga), 0) as total
         FROM wash_transactions
-        WHERE datetime(substr(tanggal, 7, 4) || '-' || substr(tanggal, 4, 2) || '-' || substr(tanggal, 1, 2) || ' ' || waktu) 
+        WHERE datetime(substr(tanggal, 7, 4) || '-' || substr(tanggal, 4, 2) || '-' || substr(tanggal, 1, 2) || ' ' || waktu_masuk) 
         BETWEEN ? AND ?
     """, (start_datetime, end_datetime))
     
@@ -2045,6 +2046,41 @@ def dashboard_page(role):
         </div>
         ''', unsafe_allow_html=True)
     
+    # Perolehan Per Akun (Admin & Supervisor only)
+    if role in ["Admin", "Supervisor"] and not df_filtered.empty:
+        st.markdown("---")
+        st.subheader("👥 Perolehan Per Akun User")
+        st.info("💡 Breakdown pendapatan cuci mobil berdasarkan user yang mencatat transaksi")
+        
+        # Group by created_by
+        earnings_by_user = df_filtered.groupby('created_by').agg({
+            'harga': 'sum',
+            'id': 'count'
+        }).reset_index()
+        earnings_by_user.columns = ['User', 'Total Pendapatan (Rp)', 'Jumlah Transaksi']
+        earnings_by_user = earnings_by_user.sort_values('Total Pendapatan (Rp)', ascending=False)
+        
+        # Format currency
+        earnings_by_user['Pendapatan'] = earnings_by_user['Total Pendapatan (Rp)'].apply(lambda x: f"Rp {x:,.0f}")
+        
+        # Display as table
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.dataframe(
+                earnings_by_user[['User', 'Pendapatan', 'Jumlah Transaksi']],
+                use_container_width=True,
+                hide_index=True
+            )
+        with col2:
+            # Chart for user earnings
+            chart_user = alt.Chart(earnings_by_user).mark_bar(cornerRadiusEnd=8).encode(
+                x=alt.X('Total Pendapatan (Rp):Q', title='Total (Rp)'),
+                y=alt.Y('User:N', sort='-x', title='User'),
+                color=alt.Color('Total Pendapatan (Rp):Q', scale=alt.Scale(scheme='blues'), legend=None),
+                tooltip=['User', alt.Tooltip('Total Pendapatan (Rp):Q', format=',.0f', title='Total Rp'), 'Jumlah Transaksi']
+            ).properties(height=200)
+            st.altair_chart(chart_user, use_container_width=True)
+    
     # Grafik
     if not df_filtered.empty:
         col1, col2 = st.columns(2)
@@ -2356,17 +2392,30 @@ def transaksi_page(role):
         
         harga = paket_cucian[paket]
         
+        # DYNAMIC PRICING: Add 5000 after 5 PM (17:00)
+        now_wib = datetime.now(WIB)
+        evening_surcharge = 0
+        if now_wib.hour >= 17:
+            evening_surcharge = 5000
+            st.warning(f"🌙 **Harga Malam:** Tambahan Rp 5.000 setelah jam 17:00")
+        
         # Hitung harga dengan multiplier berdasarkan ukuran
         multiplier_map = get_ukuran_multiplier()
         multiplier = multiplier_map.get(ukuran_mobil, 1.0) if ukuran_mobil else 1.0
-        harga_final = int(harga * multiplier)
+        harga_final = int(harga * multiplier) + evening_surcharge
         
         with col_harga:
-            if multiplier > 1.0:
+            if multiplier > 1.0 or evening_surcharge > 0:
+                breakdown_text = ""
+                if multiplier > 1.0:
+                    breakdown_text += f"<div style=\"font-size: 0.75rem; opacity: 0.9; margin-bottom: 0.2rem;\">Harga Dasar: Rp {harga:,.0f}</div>"
+                    breakdown_text += f"<div style=\"font-size: 0.75rem; opacity: 0.9; margin-bottom: 0.3rem;\">Multiplier {ukuran_mobil}: x{multiplier}</div>"
+                if evening_surcharge > 0:
+                    breakdown_text += f"<div style=\"font-size: 0.75rem; opacity: 0.9; margin-bottom: 0.3rem;\">🌙 Harga Malam: +Rp {evening_surcharge:,.0f}</div>"
+                
                 st.markdown(f"""
                 <div style="background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: white; padding: 0.8rem; border-radius: 10px; text-align: center; box-shadow: 0 3px 10px rgba(67, 233, 123, 0.3); margin-top: 1.7rem;">
-                    <div style="font-size: 0.75rem; opacity: 0.9; margin-bottom: 0.2rem;">Harga Dasar: Rp {harga:,.0f}</div>
-                    <div style="font-size: 0.75rem; opacity: 0.9; margin-bottom: 0.3rem;">Multiplier {ukuran_mobil}: x{multiplier}</div>
+                    {breakdown_text}
                     <div style="font-size: 1.2rem; font-weight: 800;">💰 Rp {harga_final:,.0f}</div>
                 </div>
                 """, unsafe_allow_html=True)
