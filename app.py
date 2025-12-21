@@ -1912,10 +1912,17 @@ def dashboard_page(role):
     if 'dashboard_date_filter' not in st.session_state:
         st.session_state.dashboard_date_filter = (today, today)
     
-    date_filter = st.date_input("📅 Filter Periode", value=st.session_state.dashboard_date_filter, key="dashboard_date_input")
-    # Update session state when user changes date input
-    if date_filter != st.session_state.dashboard_date_filter:
+    # ROLE-BASED DATE FILTER: Kasir only sees today's data
+    if role == "Kasir":
+        st.info("ℹ️ Kasir hanya dapat melihat data hari ini")
+        date_filter = (today, today)  # Force today only
         st.session_state.dashboard_date_filter = date_filter
+    else:
+        # Admin and Supervisor can select date range
+        date_filter = st.date_input("📅 Filter Periode", value=st.session_state.dashboard_date_filter, key="dashboard_date_input")
+        # Update session state when user changes date input
+        if date_filter != st.session_state.dashboard_date_filter:
+            st.session_state.dashboard_date_filter = date_filter
     
     # Apply filter
     if isinstance(date_filter, (list, tuple)) and len(date_filter) == 2:
@@ -6161,7 +6168,7 @@ def main():
     
     # Menu items based on role
     if role == "Admin":
-        # Admin has access to everything
+        # Admin/Owner has access to everything including Financial Reports
         menu_items = [
             ("Dashboard", "📊"),
             ("Cuci Mobil", "🚗"),
@@ -6175,13 +6182,15 @@ def main():
             ("User Setting", "👤")
         ]
     elif role == "Supervisor":
-        # Supervisor only has access to Cuci Mobil
+        # Supervisor only has access to Cuci Mobil and Dashboard
         menu_items = [
+            ("Dashboard", "📊"),
             ("Cuci Mobil", "🚗")
         ]
     elif role == "Kasir":
-        # Kasir has access to Kasir and Payroll
+        # Kasir has access to Dashboard (daily only), Kasir, and Payroll
         menu_items = [
+            ("Dashboard", "📊"),
             ("Kasir", "💰"),
             ("Payroll", "💼")
         ]
@@ -6216,11 +6225,11 @@ def main():
     def has_access(menu_name, user_role):
         """Check if user role has access to specific menu"""
         if user_role == "Admin":
-            return True  # Admin has access to everything
+            return True  # Admin/Owner has access to everything
         elif user_role == "Supervisor":
-            return menu_name in ["Cuci Mobil"]
+            return menu_name in ["Dashboard", "Cuci Mobil"]
         elif user_role == "Kasir":
-            return menu_name in ["Kasir", "Payroll"]
+            return menu_name in ["Dashboard", "Kasir", "Payroll"]
         return False
     
     # Verify access before showing page
