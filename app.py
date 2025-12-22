@@ -461,6 +461,39 @@ def init_db():
             VALUES (?, ?, ?, ?, ?)
         """, default_shifts)
     
+    # Tabel kas_bon - untuk mencatat hutang/pinjaman karyawan
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS kas_bon (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id INTEGER NOT NULL,
+            tanggal TEXT NOT NULL,
+            jumlah INTEGER NOT NULL,
+            keterangan TEXT,
+            status TEXT DEFAULT 'Belum Lunas',
+            sisa_hutang INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT,
+            FOREIGN KEY (employee_id) REFERENCES employees(id)
+        )
+    ''')
+    
+    # Tabel pembayaran_kas_bon - untuk mencatat cicilan pembayaran kas bon
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS pembayaran_kas_bon (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kas_bon_id INTEGER NOT NULL,
+            payroll_id INTEGER,
+            tanggal_bayar TEXT NOT NULL,
+            jumlah_bayar INTEGER NOT NULL,
+            metode TEXT DEFAULT 'Potong Gaji',
+            keterangan TEXT,
+            created_at TEXT NOT NULL,
+            created_by TEXT,
+            FOREIGN KEY (kas_bon_id) REFERENCES kas_bon(id),
+            FOREIGN KEY (payroll_id) REFERENCES payroll(id)
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -492,6 +525,8 @@ def reset_database():
     try:
         # Hapus semua data dari tabel-tabel transaksi
         tables = [
+            'pembayaran_kas_bon',
+            'kas_bon',
             'customer_reviews',
             'customer_points',
             'kasir_transactions',
@@ -758,14 +793,201 @@ def populate_dummy_data():
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (json.dumps(items), total, format_date(tanggal), waktu, None, None, "kasir"))
         
-        # 7. Add Audit Trail
+        # 7. Populate Payroll (3 bulan terakhir dengan data lengkap)
+        # Load shift settings untuk persentase
+        c.execute("SELECT shift_name, persentase_gaji FROM shift_settings")
+        shift_percentages = dict(c.fetchall())
+        
+        payroll_records = []
+        for month_offset in range(3):
+            # Tentukan periode (mingguan, 4 minggu per bulan = 12 payroll per karyawan)
+            for week in range(4):
+                # Periode 7 hari
+                week_start = now - timedelta(days=(month_offset * 30 + week * 7))
+                week_end = week_start + timedelta(days=6)
+                
+                for employee in employees:
+                    # Hitung hari kerja dari attendance dalam periode ini
+                    # Simulasi: 5-6 hari kerja per minggu (weekend kadang masuk)
+                    hari_kerja = random.randint(5, 6)
+                    
+                    # Hitung gaji berdasarkan role
+                    if employee['role'] in ['Kasir', 'Supervisor']:
+                        # Gaji tetap per minggu
+                        total_gaji = employee['gaji']
+                    else:
+                        # Worker - simulasi berdasarkan pendapatan
+                        # Asumsi pendapatan per hari: 500k - 1.5jt
+                        daily_revenue = random.randint(500000, 1500000)
+                        shift_pct = shift_percentages.get(employee['shift'], 35.0) / 100
+                        total_gaji = int(daily_revenue * shift_pct * hari_kerja)
+                    
+                    # Bonus random (0-200k)
+                    bonus = random.randint(0, 4) * 50000
+                    
+                    # Potongan random (0-100k)
+                    potongan = random.randint(0, 2) * 50000
+                    
+                    gaji_bersih = total_gaji + bonus - potongan
+                    
+                    # Status: Lunas untuk minggu lalu, Pending untuk minggu ini
+                    if month_offset == 0 and week == 0:
+                        status = "Pending"
+                        tanggal_bayar = None
+                    else:
+                        status = "Lunas"
+                        # Tanggal bayar: 2 hari setelah periode berakhir
+                        tanggal_bayar = week_end + timedelta(days=2)
+                    
+                    c.execute("""
+                        INSERT INTO payroll (employee_id, periode_awal, periode_akhir, total_hari_kerja,
+                                            total_gaji, bonus, potongan, gaji_bersih, status, 
+                                            tanggal_bayar, catatan, created_at, created_by)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (employee['id'], format_date(week_start), format_date(week_end), 
+                          hari_kerja, total_gaji, bonus, potongan, gaji_bersih, status,
+                          format_date(tanggal_bayar) if tanggal_bayar else None,
+                          f"Periode {format_date(week_start)} - {format_date(week_end)}",
+                          format_datetime(now), "admin"))
+                    
+                    payroll_records.append({
+                        'employee_id': employee['id'],
+                        'payroll_id': c.lastrowid,
+                        'tanggal_bayar': tanggal_bayar
+                    })
+        
+        # 8. Populate Kas Bon (detail dengan multiple pembayaran)
+        kas_bon_records = []
+        keterangan_kasbon = [
+            "Keperluan mendesak keluarga",
+            "Biaya pengobatan",
+            "Keperluan sekolah anak",
+            "Renovasi rumah",
+            "Bayar hutang lain",
+            "Modal usaha sampingan",
+            "Keperluan hajatan"
+        ]
+        
+        for employee in employees:
+            # 50% chance karyawan punya kas bon
+            num_kasbon = random.choices([0, 1, 2], weights=[50, 40, 10])[0]
+            
+            for kb_idx in range(num_kasbon):
+                # Tanggal pinjam: 30-90 hari yang lalu
+                days_ago_kasbon = random.randint(30, 90)
+                tanggal_kasbon = now - timedelta(days=days_ago_kasbon)
+                
+                # Jumlah pinjaman: 200k - 1jt
+                jumlah_kasbon = random.randint(4, 20) * 50000
+                
+                keterangan = random.choice(keterangan_kasbon)
+                
+                c.execute("""
+                    INSERT INTO kas_bon (employee_id, tanggal, jumlah, keterangan, status, sisa_hutang, created_at, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (employee['id'], format_date(tanggal_kasbon), jumlah_kasbon, 
+                      keterangan, "Belum Lunas", jumlah_kasbon, format_datetime(tanggal_kasbon), "admin"))
+                
+                kas_bon_id = c.lastrowid
+                kas_bon_records.append({
+                    'id': kas_bon_id,
+                    'employee_id': employee['id'],
+                    'jumlah': jumlah_kasbon,
+                    'tanggal_kasbon': tanggal_kasbon,
+                    'sisa_hutang': jumlah_kasbon
+                })
+                
+                # Simulate pembayaran cicilan (2-5 cicilan)
+                num_cicilan = random.randint(2, 5)
+                sisa_hutang_current = jumlah_kasbon
+                
+                for cicilan_idx in range(num_cicilan):
+                    if sisa_hutang_current <= 0:
+                        break
+                    
+                    # Jumlah bayar: 20-50% dari sisa hutang
+                    if cicilan_idx == num_cicilan - 1:
+                        # Cicilan terakhir: bayar sisa
+                        jumlah_bayar = sisa_hutang_current
+                    else:
+                        max_bayar = int(sisa_hutang_current * 0.5)
+                        min_bayar = min(50000, sisa_hutang_current)
+                        jumlah_bayar = random.randint(min_bayar, max(min_bayar, max_bayar))
+                        jumlah_bayar = (jumlah_bayar // 10000) * 10000  # Round to 10k
+                    
+                    # Tanggal bayar: 1-2 minggu setelah kas bon / cicilan sebelumnya
+                    days_after = random.randint(7, 14) * (cicilan_idx + 1)
+                    tanggal_bayar_kasbon = tanggal_kasbon + timedelta(days=days_after)
+                    
+                    # Hanya tambahkan pembayaran jika belum melewati hari ini
+                    if tanggal_bayar_kasbon <= now.date():
+                        metode_bayar = random.choices(
+                            ["Potong Gaji", "Tunai", "Transfer"],
+                            weights=[70, 20, 10]
+                        )[0]
+                        
+                        # Link ke payroll jika metode potong gaji
+                        payroll_id_link = None
+                        if metode_bayar == "Potong Gaji":
+                            # Cari payroll yang tanggal bayarnya dekat dengan tanggal bayar kas bon
+                            matching_payroll = [
+                                pr for pr in payroll_records 
+                                if pr['employee_id'] == employee['id'] 
+                                and pr['tanggal_bayar'] 
+                                and abs((pr['tanggal_bayar'].date() if hasattr(pr['tanggal_bayar'], 'date') else pr['tanggal_bayar']) - tanggal_bayar_kasbon).days <= 3
+                            ]
+                            if matching_payroll:
+                                payroll_id_link = matching_payroll[0]['payroll_id']
+                        
+                        c.execute("""
+                            INSERT INTO pembayaran_kas_bon (kas_bon_id, payroll_id, tanggal_bayar, jumlah_bayar, metode, keterangan, created_at, created_by)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (kas_bon_id, payroll_id_link, format_date(tanggal_bayar_kasbon), jumlah_bayar, 
+                              metode_bayar, f"Cicilan ke-{cicilan_idx + 1}", format_datetime(tanggal_bayar_kasbon), "admin"))
+                        
+                        sisa_hutang_current -= jumlah_bayar
+                        
+                        # Update sisa hutang di kas_bon
+                        c.execute("""
+                            UPDATE kas_bon SET sisa_hutang = ? WHERE id = ?
+                        """, (sisa_hutang_current, kas_bon_id))
+                        
+                        # Update status jika lunas
+                        if sisa_hutang_current <= 0:
+                            c.execute("""
+                                UPDATE kas_bon SET status = 'Lunas' WHERE id = ?
+                            """, (kas_bon_id,))
+                            break
+        
+        # 9. Add Audit Trail
         c.execute("""
             INSERT INTO audit_trail (timestamp, user, action, detail)
             VALUES (?, ?, ?, ?)
         """, (format_datetime(now), "admin", "Populate Data", "Data dummy berhasil di-generate"))
         
         conn.commit()
-        return True, f"✅ Data dummy berhasil dibuat!\n- {len(customers)} pelanggan\n- {len(employees)} karyawan\n- {len(transactions)} transaksi cuci"
+        
+        # Count all records
+        c.execute("SELECT COUNT(*) FROM kas_bon")
+        kasbon_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM kas_bon WHERE status = 'Lunas'")
+        kasbon_lunas = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM payroll")
+        payroll_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM pembayaran_kas_bon")
+        pembayaran_count = c.fetchone()[0]
+        
+        return True, f"""✅ Data dummy berhasil dibuat!
+📊 Summary:
+- {len(customers)} pelanggan
+- {len(employees)} karyawan
+- {len(transactions)} transaksi cuci
+- {payroll_count} slip gaji ({len(employees)} karyawan x 12 periode)
+- {kasbon_count} kas bon ({kasbon_lunas} lunas, {kasbon_count - kasbon_lunas} belum lunas)
+- {pembayaran_count} pembayaran kas bon"""
         
     except Exception as e:
         conn.rollback()
@@ -1299,6 +1521,153 @@ def update_payroll_status(payroll_id, status, tanggal_bayar):
     """, (status, tanggal_bayar, payroll_id))
     conn.commit()
     conn.close()
+
+
+# ========== KAS BON FUNCTIONS ==========
+
+def add_kas_bon(employee_id, tanggal, jumlah, keterangan, created_by):
+    """Add new kas bon record"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    now = datetime.now(WIB).strftime("%d-%m-%Y %H:%M:%S")
+    c.execute("""
+        INSERT INTO kas_bon (employee_id, tanggal, jumlah, keterangan, status, sisa_hutang, created_at, created_by)
+        VALUES (?, ?, ?, ?, 'Belum Lunas', ?, ?, ?)
+    """, (employee_id, tanggal, jumlah, keterangan, jumlah, now, created_by))
+    conn.commit()
+    conn.close()
+
+def get_kas_bon_by_employee(employee_id, status_filter=None):
+    """Get kas bon records by employee"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    
+    if status_filter:
+        c.execute("""
+            SELECT kb.*, e.nama, e.role_karyawan
+            FROM kas_bon kb
+            JOIN employees e ON kb.employee_id = e.id
+            WHERE kb.employee_id = ? AND kb.status = ?
+            ORDER BY kb.tanggal DESC
+        """, (employee_id, status_filter))
+    else:
+        c.execute("""
+            SELECT kb.*, e.nama, e.role_karyawan
+            FROM kas_bon kb
+            JOIN employees e ON kb.employee_id = e.id
+            WHERE kb.employee_id = ?
+            ORDER BY kb.tanggal DESC
+        """, (employee_id,))
+    
+    kas_bon = [dict(zip([column[0] for column in c.description], row)) for row in c.fetchall()]
+    conn.close()
+    return kas_bon
+
+def get_all_kas_bon(status_filter=None):
+    """Get all kas bon records"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    
+    if status_filter:
+        c.execute("""
+            SELECT kb.*, e.nama, e.role_karyawan
+            FROM kas_bon kb
+            JOIN employees e ON kb.employee_id = e.id
+            WHERE kb.status = ?
+            ORDER BY kb.tanggal DESC
+        """, (status_filter,))
+    else:
+        c.execute("""
+            SELECT kb.*, e.nama, e.role_karyawan
+            FROM kas_bon kb
+            JOIN employees e ON kb.employee_id = e.id
+            ORDER BY kb.tanggal DESC
+        """)
+    
+    kas_bon = [dict(zip([column[0] for column in c.description], row)) for row in c.fetchall()]
+    conn.close()
+    return kas_bon
+
+def get_total_hutang_by_employee(employee_id):
+    """Get total hutang belum lunas by employee"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT COALESCE(SUM(sisa_hutang), 0)
+        FROM kas_bon
+        WHERE employee_id = ? AND status = 'Belum Lunas'
+    """, (employee_id,))
+    total = c.fetchone()[0]
+    conn.close()
+    return total
+
+def add_pembayaran_kas_bon(kas_bon_id, payroll_id, tanggal_bayar, jumlah_bayar, metode, keterangan, created_by):
+    """Add pembayaran kas bon and update sisa hutang"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    now = datetime.now(WIB).strftime("%d-%m-%Y %H:%M:%S")
+    
+    try:
+        # Insert pembayaran
+        c.execute("""
+            INSERT INTO pembayaran_kas_bon (kas_bon_id, payroll_id, tanggal_bayar, jumlah_bayar, metode, keterangan, created_at, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (kas_bon_id, payroll_id, tanggal_bayar, jumlah_bayar, metode, keterangan, now, created_by))
+        
+        # Update sisa hutang di kas_bon
+        c.execute("""
+            UPDATE kas_bon
+            SET sisa_hutang = sisa_hutang - ?
+            WHERE id = ?
+        """, (jumlah_bayar, kas_bon_id))
+        
+        # Update status jika sudah lunas
+        c.execute("""
+            UPDATE kas_bon
+            SET status = CASE 
+                WHEN sisa_hutang <= 0 THEN 'Lunas'
+                ELSE 'Belum Lunas'
+            END
+            WHERE id = ?
+        """, (kas_bon_id,))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def get_pembayaran_kas_bon(kas_bon_id):
+    """Get pembayaran history for specific kas bon"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    c.execute("""
+        SELECT * FROM pembayaran_kas_bon
+        WHERE kas_bon_id = ?
+        ORDER BY tanggal_bayar DESC
+    """, (kas_bon_id,))
+    pembayaran = [dict(zip([column[0] for column in c.description], row)) for row in c.fetchall()]
+    conn.close()
+    return pembayaran
+
+def delete_kas_bon(kas_bon_id):
+    """Delete kas bon and related pembayaran"""
+    conn = sqlite3.connect('car_wash.db')
+    c = conn.cursor()
+    try:
+        # Delete pembayaran first (foreign key constraint)
+        c.execute("DELETE FROM pembayaran_kas_bon WHERE kas_bon_id = ?", (kas_bon_id,))
+        # Delete kas bon
+        c.execute("DELETE FROM kas_bon WHERE id = ?", (kas_bon_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
 
 
 # --- Coffee Shop Helpers ---
@@ -6356,7 +6725,7 @@ def payroll_page(role):
     st.markdown("---")
     
     # Tab untuk berbagai fitur payroll
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["👥 Data Karyawan", "📋 Presensi", "💰 Hitung Gaji", "📊 Riwayat Gaji", "⚙️ Setting Shift"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["👥 Data Karyawan", "📋 Presensi", "💰 Hitung Gaji", "📊 Riwayat Gaji", "💸 Kas Bon", "⚙️ Setting Shift"])
     
     with tab1:
         st.markdown("### 👥 Manajemen Data Karyawan")
@@ -6789,6 +7158,179 @@ def payroll_page(role):
             st.info("📭 Belum ada data payroll")
     
     with tab5:
+        st.markdown("### 💸 Manajemen Kas Bon / Hutang Karyawan")
+        
+        col_kasbon1, col_kasbon2 = st.columns([2, 1])
+        
+        with col_kasbon1:
+            st.markdown("#### 📋 Daftar Kas Bon")
+            
+            # Filter
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                employees = get_all_employees()
+                emp_options = ["Semua Karyawan"] + [f"{e['id']} - {e['nama']}" for e in employees]
+                filter_emp = st.selectbox("Filter Karyawan", emp_options, key="kasbon_filter_emp")
+            with col_f2:
+                filter_status = st.selectbox("Status", ["Semua", "Belum Lunas", "Lunas"], key="kasbon_filter_status")
+            
+            # Get kas bon data
+            if filter_emp == "Semua Karyawan":
+                if filter_status == "Semua":
+                    kas_bon_list = get_all_kas_bon()
+                else:
+                    kas_bon_list = get_all_kas_bon(filter_status)
+            else:
+                emp_id = int(filter_emp.split(" - ")[0])
+                if filter_status == "Semua":
+                    kas_bon_list = get_kas_bon_by_employee(emp_id)
+                else:
+                    kas_bon_list = get_kas_bon_by_employee(emp_id, filter_status)
+            
+            if kas_bon_list:
+                # Summary
+                total_hutang = sum(kb['sisa_hutang'] for kb in kas_bon_list if kb['status'] == 'Belum Lunas')
+                total_lunas = sum(kb['jumlah'] for kb in kas_bon_list if kb['status'] == 'Lunas')
+                
+                col_s1, col_s2, col_s3 = st.columns(3)
+                with col_s1:
+                    st.metric("📝 Total Record", len(kas_bon_list))
+                with col_s2:
+                    st.metric("💸 Total Hutang Aktif", f"Rp {total_hutang:,.0f}")
+                with col_s3:
+                    st.metric("✅ Total Lunas", f"Rp {total_lunas:,.0f}")
+                
+                st.markdown("---")
+                
+                # Display kas bon list
+                for kb in kas_bon_list:
+                    status_icon = "⏳" if kb['status'] == 'Belum Lunas' else "✅"
+                    with st.expander(f"{status_icon} {kb['nama']} - Rp {kb['jumlah']:,.0f} | Sisa: Rp {kb['sisa_hutang']:,.0f} | {kb['tanggal']}"):
+                        col_kb1, col_kb2 = st.columns([2, 1])
+                        
+                        with col_kb1:
+                            st.write(f"**Nama:** {kb['nama']}")
+                            st.write(f"**Role:** {kb['role_karyawan']}")
+                            st.write(f"**Tanggal Pinjam:** {kb['tanggal']}")
+                            st.write(f"**Jumlah Pinjam:** Rp {kb['jumlah']:,.0f}")
+                            st.write(f"**Sisa Hutang:** Rp {kb['sisa_hutang']:,.0f}")
+                            st.write(f"**Status:** {kb['status']}")
+                            if kb['keterangan']:
+                                st.info(f"📝 {kb['keterangan']}")
+                        
+                        with col_kb2:
+                            # Riwayat pembayaran
+                            pembayaran_list = get_pembayaran_kas_bon(kb['id'])
+                            if pembayaran_list:
+                                st.markdown("**💰 Riwayat Bayar:**")
+                                for p in pembayaran_list:
+                                    st.write(f"- {p['tanggal_bayar']}: Rp {p['jumlah_bayar']:,.0f}")
+                            
+                            # Bayar cicilan
+                            if kb['status'] == 'Belum Lunas':
+                                st.markdown("---")
+                                with st.form(f"bayar_kasbon_{kb['id']}"):
+                                    st.markdown("**Bayar Cicilan**")
+                                    max_bayar = kb['sisa_hutang']
+                                    jumlah_bayar = st.number_input(
+                                        "Jumlah Bayar (Rp)",
+                                        min_value=0,
+                                        max_value=max_bayar,
+                                        step=10000,
+                                        value=min(50000, max_bayar),
+                                        key=f"jumlah_bayar_{kb['id']}"
+                                    )
+                                    metode = st.selectbox("Metode", ["Potong Gaji", "Tunai", "Transfer"], key=f"metode_{kb['id']}")
+                                    ket_bayar = st.text_input("Keterangan", key=f"ket_bayar_{kb['id']}")
+                                    
+                                    submit_bayar = st.form_submit_button("💰 Bayar", use_container_width=True)
+                                    
+                                    if submit_bayar and jumlah_bayar > 0:
+                                        tanggal_bayar = datetime.now(WIB).strftime("%d-%m-%Y")
+                                        success = add_pembayaran_kas_bon(
+                                            kb['id'], None, tanggal_bayar, jumlah_bayar,
+                                            metode, ket_bayar, st.session_state.get('login_user')
+                                        )
+                                        if success:
+                                            add_audit("bayar_kasbon", f"Pembayaran kas bon {kb['nama']}: Rp {jumlah_bayar:,.0f}")
+                                            st.success("✅ Pembayaran berhasil dicatat!")
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Pembayaran gagal!")
+                        
+                        # Delete button (only for admin)
+                        if role == "Admin":
+                            if st.button(f"🗑️ Hapus", key=f"del_kasbon_{kb['id']}", use_container_width=True):
+                                if delete_kas_bon(kb['id']):
+                                    add_audit("delete_kasbon", f"Hapus kas bon {kb['nama']}")
+                                    st.success("✅ Kas bon berhasil dihapus!")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ Gagal menghapus kas bon!")
+            else:
+                st.info("📭 Belum ada data kas bon")
+        
+        with col_kasbon2:
+            st.markdown("#### ➕ Tambah Kas Bon Baru")
+            
+            with st.form("add_kasbon_form"):
+                employees = get_all_employees()
+                if employees:
+                    emp_options = {f"{e['id']} - {e['nama']}": e for e in employees}
+                    selected_emp = st.selectbox("Pilih Karyawan*", list(emp_options.keys()), key="kasbon_emp")
+                    emp_data = emp_options[selected_emp]
+                    
+                    # Show total hutang saat ini
+                    total_hutang_now = get_total_hutang_by_employee(emp_data['id'])
+                    if total_hutang_now > 0:
+                        st.warning(f"⚠️ Total hutang saat ini: Rp {total_hutang_now:,.0f}")
+                    
+                    tanggal_pinjam = st.date_input("Tanggal Pinjam*", value=datetime.now(WIB), key="kasbon_tgl")
+                    jumlah_pinjam = st.number_input("Jumlah Pinjam (Rp)*", min_value=0, step=10000, value=100000, key="kasbon_jumlah")
+                    keterangan_pinjam = st.text_area("Keterangan", placeholder="Contoh: Keperluan mendesak", key="kasbon_ket")
+                    
+                    submit_kasbon = st.form_submit_button("💾 Simpan Kas Bon", use_container_width=True)
+                    
+                    if submit_kasbon:
+                        if jumlah_pinjam > 0:
+                            add_kas_bon(
+                                emp_data['id'],
+                                tanggal_pinjam.strftime("%d-%m-%Y"),
+                                jumlah_pinjam,
+                                keterangan_pinjam,
+                                st.session_state.get('login_user')
+                            )
+                            add_audit("add_kasbon", f"Kas bon baru: {emp_data['nama']} - Rp {jumlah_pinjam:,.0f}")
+                            st.success("✅ Kas bon berhasil ditambahkan!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Jumlah pinjam harus lebih dari 0!")
+                else:
+                    st.warning("⚠️ Belum ada data karyawan")
+                    st.form_submit_button("💾 Simpan Kas Bon", use_container_width=True, disabled=True)
+            
+            st.markdown("---")
+            st.markdown("### 📖 Panduan Kas Bon")
+            st.markdown("""
+            **Cara Kerja:**
+            1. Input kas bon/pinjaman karyawan
+            2. Sistem mencatat hutang
+            3. Bayar cicilan manual atau otomatis potong gaji
+            4. Status otomatis berubah jadi "Lunas" saat lunas
+            
+            **Fitur:**
+            - ✅ Tracking hutang per karyawan
+            - ✅ Riwayat pembayaran
+            - ✅ Multiple payment methods
+            - ✅ Auto potong gaji (manual input)
+            
+            **Tips:**
+            - Gunakan "Potong Gaji" saat membayar dari gaji karyawan
+            - Total hutang otomatis ter-update setiap pembayaran
+            - Admin dapat hapus record kas bon
+            """)
+    
+    with tab6:
         st.markdown("### ⚙️ Setting Shift & Persentase Gaji")
         
         shifts = get_shift_settings()
