@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
-from datetime import datetime, date, time, timedelta
+import time
+from datetime import datetime, date, time as dt_time, timedelta
 import altair as alt
 import pytz
 import json
@@ -41,6 +42,14 @@ def format_date(date_obj):
     if hasattr(date_obj, 'strftime'):
         return date_obj.strftime('%d-%m-%Y')
     return str(date_obj)
+
+def format_datetime(dt_obj):
+    """Format datetime object ke string dd-mm-yyyy HH:MM:SS"""
+    if pd.isna(dt_obj) or dt_obj is None:
+        return ''
+    if hasattr(dt_obj, 'strftime'):
+        return dt_obj.strftime('%d-%m-%Y %H:%M:%S')
+    return str(dt_obj)
 
 DB_NAME = "car_wash.db"
 
@@ -459,6 +468,310 @@ def init_db():
 def generate_secret_code():
     """Generate unique 8-character secret code"""
     return secrets.token_urlsafe(6).upper().replace('-', 'X').replace('_', 'Y')[:8]
+
+
+# --- Data Dummy Functions ---
+def check_database_empty():
+    """Check apakah database kosong (perlu di-populate)"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # Check apakah ada customers
+    c.execute("SELECT COUNT(*) FROM customers")
+    customer_count = c.fetchone()[0]
+    
+    conn.close()
+    return customer_count == 0
+
+
+def reset_database():
+    """Reset seluruh database (hapus semua data transaksi)"""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    try:
+        # Hapus semua data dari tabel-tabel transaksi
+        tables = [
+            'customer_reviews',
+            'customer_points',
+            'kasir_transactions',
+            'coffee_sales',
+            'wash_transactions',
+            'payroll',
+            'attendance',
+            'employees',
+            'customers',
+            'audit_trail'
+        ]
+        
+        for table in tables:
+            c.execute(f"DELETE FROM {table}")
+        
+        conn.commit()
+        return True, "Database berhasil di-reset!"
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error reset database: {str(e)}"
+    finally:
+        conn.close()
+
+
+def populate_dummy_data():
+    """Populate database dengan data dummy yang lengkap"""
+    import random
+    
+    # Data untuk generate
+    NAMA_DEPAN = [
+        "Budi", "Siti", "Ahmad", "Dewi", "Rudi", "Ani", "Agus", "Sri", "Bambang", "Lina",
+        "Hendra", "Maya", "Andi", "Rina", "Doni", "Sari", "Eko", "Wati", "Fajar", "Indah",
+        "Joko", "Nur", "Teguh", "Putri", "Wahyu", "Ayu", "Yudi", "Lestari", "Rahmat", "Kartika"
+    ]
+    
+    NAMA_BELAKANG = [
+        "Santoso", "Wijaya", "Pratama", "Kusuma", "Putra", "Putri", "Setiawan", "Wibowo",
+        "Hidayat", "Nugroho", "Permana", "Saputra", "Kurniawan", "Suryanto", "Gunawan"
+    ]
+    
+    JENIS_KENDARAAN = ["Mobil", "Motor"]
+    MERK_MOBIL = ["Toyota", "Honda", "Suzuki", "Daihatsu", "Mitsubishi", "Nissan", "Mazda", "BMW"]
+    MERK_MOTOR = ["Honda", "Yamaha", "Suzuki", "Kawasaki", "Vespa"]
+    UKURAN_MOBIL = ["Kecil", "Sedang", "Besar", "Extra Besar"]
+    
+    METODE_BAYAR = ["Tunai", "Transfer", "QRIS", "Debit"]
+    
+    REVIEW_TEXTS = [
+        "Sangat puas dengan pelayanan, mobil bersih dan wangi!",
+        "Pelayanan cepat dan hasil memuaskan.",
+        "Harga terjangkau, hasil maksimal. Recommended!",
+        "Staff ramah dan profesional.",
+        "Tempat bersih, hasil cucian bagus.",
+        "Kualitas cucian sangat baik, akan kembali lagi."
+    ]
+    
+    def generate_nopol():
+        huruf = ['B', 'D', 'L', 'F', 'N', 'T', 'S', 'H', 'K', 'R']
+        angka = random.randint(1000, 9999)
+        huruf_akhir = random.choice('ABCDEFGHIJKLMNOPQRST')
+        huruf_akhir2 = random.choice('ABCDEFGHIJKLMNOPQRST')
+        return f"{random.choice(huruf)}{angka}{huruf_akhir}{huruf_akhir2}"
+    
+    def generate_phone():
+        return f"08{random.randint(1, 9)}{random.randint(10000000, 99999999)}"
+    
+    def generate_nama():
+        return f"{random.choice(NAMA_DEPAN)} {random.choice(NAMA_BELAKANG)}"
+    
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    try:
+        now = datetime.now(WIB)
+        
+        # 1. Populate Customers (30 pelanggan)
+        customers = []
+        for i in range(30):
+            nopol = generate_nopol()
+            nama = generate_nama()
+            no_telp = generate_phone()
+            jenis_kendaraan = random.choice(JENIS_KENDARAAN)
+            
+            if jenis_kendaraan == "Mobil":
+                merk = random.choice(MERK_MOBIL)
+                ukuran = random.choice(UKURAN_MOBIL)
+            else:
+                merk = random.choice(MERK_MOTOR)
+                ukuran = "Kecil"
+            
+            days_ago = random.randint(1, 180)
+            created_at = now - timedelta(days=days_ago)
+            
+            try:
+                c.execute("""
+                    INSERT INTO customers (nopol, nama_customer, no_telp, jenis_kendaraan, merk_kendaraan, ukuran_mobil, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (nopol, nama, no_telp, jenis_kendaraan, merk, ukuran, format_datetime(created_at)))
+                
+                customers.append({
+                    'nopol': nopol, 'nama': nama, 'no_telp': no_telp,
+                    'jenis_kendaraan': jenis_kendaraan, 'merk': merk, 'ukuran': ukuran
+                })
+            except:
+                pass
+        
+        # 2. Populate Employees (6 karyawan)
+        roles = ["Washer", "QC Inspector", "Kasir", "Supervisor"]
+        gaji_ranges = {
+            "Washer": (3000000, 4000000),
+            "QC Inspector": (3500000, 4500000),
+            "Kasir": (3500000, 4500000),
+            "Supervisor": (5000000, 6000000)
+        }
+        shifts = ["Pagi", "Malam"]
+        shift_times = {"Pagi": ("08:00", "17:00"), "Malam": ("17:00", "08:00")}
+        
+        employees = []
+        for i in range(6):
+            nama = generate_nama()
+            role = random.choice(roles)
+            gaji_min, gaji_max = gaji_ranges[role]
+            gaji = random.randint(gaji_min // 100000, gaji_max // 100000) * 100000
+            shift = random.choice(shifts)
+            jam_masuk, jam_pulang = shift_times[shift]
+            
+            c.execute("""
+                INSERT INTO employees (nama, role_karyawan, gaji_tetap, shift, jam_masuk_default, 
+                                       jam_pulang_default, status, no_telp, created_at, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (nama, role, gaji, shift, jam_masuk, jam_pulang, "Aktif", generate_phone(), 
+                  format_datetime(now - timedelta(days=random.randint(30, 365))), "admin"))
+            
+            employees.append({'id': c.lastrowid, 'nama': nama, 'role': role, 'gaji': gaji, 'shift': shift})
+        
+        # 3. Populate Attendance (30 hari terakhir)
+        for employee in employees:
+            for day in range(30):
+                tanggal = now - timedelta(days=day)
+                rand = random.random()
+                
+                if rand < 0.90:  # 90% hadir
+                    jam_masuk = f"{random.randint(7, 9):02d}:{random.randint(0, 59):02d}"
+                    jam_pulang = f"{random.randint(16, 18):02d}:{random.randint(0, 59):02d}"
+                    status = "Hadir"
+                elif rand < 0.95:  # 5% izin
+                    jam_masuk = jam_pulang = ""
+                    status = "Izin"
+                else:  # 5% alpha
+                    jam_masuk = jam_pulang = ""
+                    status = "Alpha"
+                
+                c.execute("""
+                    INSERT INTO attendance (employee_id, tanggal, jam_masuk, jam_pulang, shift, status, catatan, created_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (employee['id'], format_date(tanggal), jam_masuk, jam_pulang, employee['shift'], status, "", "system"))
+        
+        # 4. Populate Wash Transactions (100 transaksi)
+        c.execute("SELECT setting_value FROM settings WHERE setting_key = 'ukuran_multiplier'")
+        result = c.fetchone()
+        ukuran_multiplier = json.loads(result[0]) if result else {"Kecil": 1.0, "Sedang": 1.2, "Besar": 1.5, "Extra Besar": 2.0}
+        
+        transactions = []
+        for i in range(100):
+            customer = random.choice(customers)
+            days_ago = random.randint(0, 60)
+            tanggal = now - timedelta(days=days_ago)
+            
+            jam_masuk = f"{random.randint(8, 20):02d}:{random.randint(0, 59):02d}"
+            waktu_selesai = f"{random.randint(10, 21):02d}:{random.randint(0, 59):02d}"
+            
+            paket = random.choice(list(PAKET_CUCIAN.keys()))
+            harga_base = PAKET_CUCIAN[paket]
+            multiplier = ukuran_multiplier.get(customer['ukuran'], 1.0)
+            harga = int(harga_base * multiplier)
+            
+            status = "Selesai" if days_ago > 0 or random.random() > 0.05 else "Dalam Proses"
+            
+            c.execute("""
+                INSERT INTO wash_transactions (nopol, nama_customer, tanggal, waktu_masuk, waktu_selesai,
+                                              paket_cuci, harga, jenis_kendaraan, merk_kendaraan, ukuran_mobil,
+                                              checklist_datang, checklist_selesai, qc_barang, catatan, status, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (customer['nopol'], customer['nama'], format_date(tanggal), jam_masuk, waktu_selesai,
+                  paket, harga, customer['jenis_kendaraan'], customer['merk'], customer['ukuran'],
+                  json.dumps(DEFAULT_CHECKLIST_DATANG), json.dumps(DEFAULT_CHECKLIST_SELESAI),
+                  "OK", "", status, "admin"))
+            
+            if status == "Selesai":
+                transactions.append({
+                    'id': c.lastrowid, 'nopol': customer['nopol'], 'nama': customer['nama'],
+                    'no_telp': customer['no_telp'], 'tanggal': tanggal, 'paket': paket, 'harga': harga
+                })
+        
+        # 5. Populate Kasir Transactions & Reviews
+        for trans in transactions:
+            # Generate coffee items (30% chance)
+            has_coffee = random.random() < 0.3
+            coffee_items = []
+            harga_coffee = 0
+            
+            if has_coffee:
+                for _ in range(random.randint(1, 2)):
+                    item_name = random.choice(list(DEFAULT_COFFEE_MENU.keys()))
+                    price = DEFAULT_COFFEE_MENU[item_name]
+                    qty = random.randint(1, 2)
+                    coffee_items.append({'nama': item_name, 'harga': price, 'qty': qty, 'subtotal': price * qty})
+                    harga_coffee += price * qty
+            
+            total_bayar = trans['harga'] + harga_coffee
+            secret_code = generate_secret_code()
+            
+            c.execute("""
+                INSERT INTO kasir_transactions (nopol, nama_customer, no_telp, tanggal, waktu,
+                                               wash_trans_id, paket_cuci, harga_cuci, coffee_items, harga_coffee, 
+                                               total_bayar, status_bayar, metode_bayar, secret_code, created_by, catatan)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (trans['nopol'], trans['nama'], trans['no_telp'], format_date(trans['tanggal']), "12:00",
+                  trans['id'], trans['paket'], trans['harga'], json.dumps(coffee_items) if coffee_items else None,
+                  harga_coffee, total_bayar, "Lunas", random.choice(METODE_BAYAR), secret_code, "kasir", ""))
+            
+            kasir_id = c.lastrowid
+            
+            # Add review (50% chance)
+            if random.random() < 0.5:
+                rating = random.choices([3, 4, 5], weights=[10, 40, 50])[0]
+                reward_points = rating * 10
+                review_date = trans['tanggal'] + timedelta(days=random.randint(0, 2))
+                
+                c.execute("""
+                    INSERT INTO customer_reviews (secret_code, trans_id, trans_type, nopol, no_telp,
+                                                 nama_customer, rating, review_text, review_date, review_time, reward_points)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (secret_code, kasir_id, "kasir", trans['nopol'], trans['no_telp'], trans['nama'],
+                      rating, random.choice(REVIEW_TEXTS), format_date(review_date), "14:00", reward_points))
+                
+                # Update customer points
+                c.execute("""
+                    INSERT INTO customer_points (nopol, no_telp, nama_customer, total_points, last_updated)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(nopol, no_telp) DO UPDATE SET 
+                        total_points = total_points + ?,
+                        last_updated = ?
+                """, (trans['nopol'], trans['no_telp'], trans['nama'], reward_points, format_datetime(now),
+                      reward_points, format_datetime(now)))
+        
+        # 6. Populate Coffee Sales (50 transaksi standalone)
+        for i in range(50):
+            days_ago = random.randint(0, 60)
+            tanggal = now - timedelta(days=days_ago)
+            waktu = f"{random.randint(8, 20):02d}:{random.randint(0, 59):02d}"
+            
+            items = []
+            total = 0
+            for _ in range(random.randint(1, 3)):
+                item_name = random.choice(list(DEFAULT_COFFEE_MENU.keys()))
+                price = DEFAULT_COFFEE_MENU[item_name]
+                qty = random.randint(1, 2)
+                items.append({'nama': item_name, 'harga': price, 'qty': qty, 'subtotal': price * qty})
+                total += price * qty
+            
+            c.execute("""
+                INSERT INTO coffee_sales (items, total, tanggal, waktu, nama_customer, no_telp, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (json.dumps(items), total, format_date(tanggal), waktu, None, None, "kasir"))
+        
+        # 7. Add Audit Trail
+        c.execute("""
+            INSERT INTO audit_trail (timestamp, user, action, detail)
+            VALUES (?, ?, ?, ?)
+        """, (format_datetime(now), "admin", "Populate Data", "Data dummy berhasil di-generate"))
+        
+        conn.commit()
+        return True, f"✅ Data dummy berhasil dibuat!\n- {len(customers)} pelanggan\n- {len(employees)} karyawan\n- {len(transactions)} transaksi cuci"
+        
+    except Exception as e:
+        conn.rollback()
+        return False, f"Error populate data: {str(e)}"
+    finally:
+        conn.close()
 
 
 # --- Simpan & Load Customer ---
@@ -5366,47 +5679,189 @@ def setting_toko_page(role):
         st.warning("⚠️ Hanya Admin dan Supervisor yang dapat mengakses halaman ini")
         return
     
-    st.subheader("🏪 Informasi Toko")
+    # Create tabs
+    tab1, tab2 = st.tabs(["🏪 Info Toko", "🗄️ Database Management"])
     
-    toko_info = get_setting("toko_info")
-    if not toko_info:
-        toko_info = {
-            "nama": "TIME AUTOCARE",
-            "tagline": "Detailing & Ceramic Coating",
-            "alamat": "Jl. Contoh No. 123",
-            "telp": "08123456789",
-            "email": "info@timeautocare.com"
-        }
-    
-    with st.form("toko_info_form"):
-        st.info("ℹ️ Informasi ini akan muncul di laporan dan dokumen")
+    with tab1:
+        st.subheader("🏪 Informasi Toko")
         
-        nama_toko = st.text_input("🏪 Nama Toko", value=toko_info.get("nama", ""))
-        tagline_toko = st.text_input("✨ Tagline", value=toko_info.get("tagline", ""), placeholder="Contoh: Detailing & Ceramic Coating")
-        alamat_toko = st.text_area("📍 Alamat", value=toko_info.get("alamat", ""))
-        col1, col2 = st.columns(2)
-        with col1:
-            telp_toko = st.text_input("📞 Telepon", value=toko_info.get("telp", ""))
-        with col2:
-            email_toko = st.text_input("📧 Email", value=toko_info.get("email", ""))
-        
-        submitted = st.form_submit_button("💾 Simpan Info Toko", type="primary", use_container_width=True)
-        
-        if submitted:
-            new_toko_info = {
-                "nama": nama_toko,
-                "tagline": tagline_toko,
-                "alamat": alamat_toko,
-                "telp": telp_toko,
-                "email": email_toko
+        toko_info = get_setting("toko_info")
+        if not toko_info:
+            toko_info = {
+                "nama": "TIME AUTOCARE",
+                "tagline": "Detailing & Ceramic Coating",
+                "alamat": "Jl. Contoh No. 123",
+                "telp": "08123456789",
+                "email": "info@timeautocare.com"
             }
-            success, msg = update_setting("toko_info", new_toko_info)
-            if success:
-                add_audit("setting_toko", "Update info toko")
-                st.success("✅ Info toko berhasil diupdate")
-                st.rerun()
-            else:
-                st.error(f"❌ {msg}")
+        
+        with st.form("toko_info_form"):
+            st.info("ℹ️ Informasi ini akan muncul di laporan dan dokumen")
+            
+            nama_toko = st.text_input("🏪 Nama Toko", value=toko_info.get("nama", ""))
+            tagline_toko = st.text_input("✨ Tagline", value=toko_info.get("tagline", ""), placeholder="Contoh: Detailing & Ceramic Coating")
+            alamat_toko = st.text_area("📍 Alamat", value=toko_info.get("alamat", ""))
+            col1, col2 = st.columns(2)
+            with col1:
+                telp_toko = st.text_input("📞 Telepon", value=toko_info.get("telp", ""))
+            with col2:
+                email_toko = st.text_input("📧 Email", value=toko_info.get("email", ""))
+            
+            submitted = st.form_submit_button("💾 Simpan Info Toko", type="primary", use_container_width=True)
+            
+            if submitted:
+                new_toko_info = {
+                    "nama": nama_toko,
+                    "tagline": tagline_toko,
+                    "alamat": alamat_toko,
+                    "telp": telp_toko,
+                    "email": email_toko
+                }
+                success, msg = update_setting("toko_info", new_toko_info)
+                if success:
+                    add_audit("setting_toko", "Update info toko")
+                    st.success("✅ Info toko berhasil diupdate")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+    
+    with tab2:
+        st.subheader("🗄️ Database Management")
+        st.warning("⚠️ **PERHATIAN:** Fitur ini hanya untuk Admin. Berhati-hatilah saat menggunakan fitur ini!")
+        
+        # Check database stats
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM customers")
+        customer_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM wash_transactions")
+        wash_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM kasir_transactions")
+        kasir_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM employees")
+        employee_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM customer_reviews")
+        review_count = c.fetchone()[0]
+        
+        conn.close()
+        
+        st.markdown("### 📊 Status Database Saat Ini")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric("👥 Pelanggan", customer_count)
+        with col2:
+            st.metric("🚗 Transaksi Cuci", wash_count)
+        with col3:
+            st.metric("💰 Transaksi Kasir", kasir_count)
+        with col4:
+            st.metric("👨‍💼 Karyawan", employee_count)
+        with col5:
+            st.metric("⭐ Review", review_count)
+        
+        st.markdown("---")
+        
+        col_a, col_b = st.columns(2)
+        
+        with col_a:
+            st.markdown("### 🔄 Reset & Populate Data Dummy")
+            st.info("""
+            **Fitur ini akan:**
+            1. Menghapus SEMUA data transaksi yang ada
+            2. Membuat data dummy baru yang lengkap
+            
+            **Data yang dibuat:**
+            - 30 pelanggan dummy
+            - 6 karyawan dummy
+            - 100 transaksi cuci mobil
+            - 50 transaksi coffee/snack
+            - Review pelanggan
+            - Presensi & gaji karyawan
+            """)
+            
+            # Confirmation checkbox
+            confirm_reset = st.checkbox("✅ Saya mengerti risiko dan ingin reset database")
+            
+            if st.button("🔄 Reset & Populate Data Dummy", 
+                        type="primary", 
+                        use_container_width=True,
+                        disabled=not confirm_reset):
+                with st.spinner("🔄 Sedang reset database dan membuat data dummy..."):
+                    # Reset database
+                    success_reset, msg_reset = reset_database()
+                    
+                    if success_reset:
+                        st.info(msg_reset)
+                        
+                        # Populate data dummy
+                        success_populate, msg_populate = populate_dummy_data()
+                        
+                        if success_populate:
+                            add_audit("reset_database", "Reset database dan populate data dummy")
+                            st.success("✅ Database berhasil di-reset dan data dummy berhasil dibuat!")
+                            st.balloons()
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Error populate data: {msg_populate}")
+                    else:
+                        st.error(f"❌ Error reset database: {msg_reset}")
+        
+        with col_b:
+            st.markdown("### 💾 Backup Database")
+            st.info("""
+            **Fitur ini akan:**
+            - Membuat salinan database saat ini
+            - File akan disimpan dengan timestamp
+            """)
+            
+            if st.button("💾 Backup Database", type="secondary", use_container_width=True):
+                import shutil
+                from datetime import datetime
+                
+                try:
+                    # Create backup filename with timestamp
+                    backup_time = datetime.now(WIB).strftime("%Y%m%d_%H%M%S")
+                    backup_filename = f"car_wash_backup_{backup_time}.db"
+                    
+                    # Copy database file
+                    shutil.copy2(DB_NAME, backup_filename)
+                    
+                    st.success(f"✅ Backup berhasil dibuat: {backup_filename}")
+                    add_audit("backup_database", f"Backup database: {backup_filename}")
+                    
+                    # Offer download
+                    with open(backup_filename, 'rb') as f:
+                        st.download_button(
+                            label="📥 Download Backup",
+                            data=f,
+                            file_name=backup_filename,
+                            mime="application/x-sqlite3"
+                        )
+                except Exception as e:
+                    st.error(f"❌ Error backup database: {str(e)}")
+            
+            st.markdown("---")
+            
+            st.markdown("### 🧹 Hapus Data Lama")
+            st.info("""
+            **Fitur ini akan menghapus:**
+            - Transaksi lebih dari X hari
+            - Review lama
+            - Audit trail lama
+            
+            *(Coming soon)*
+            """)
+            
+            days_to_keep = st.number_input("Simpan data X hari terakhir", min_value=30, max_value=365, value=90)
+            
+            st.button("🧹 Bersihkan Data Lama", type="secondary", use_container_width=True, disabled=True)
 
 def audit_trail_page():
     st.header("Audit Trail")
@@ -5929,7 +6384,7 @@ def payroll_page(role):
             st.markdown("#### ➕ Tambah Karyawan")
             with st.form("add_employee_form"):
                 nama = st.text_input("Nama Lengkap*")
-                role_karyawan = st.selectbox("Role Karyawan*", ["Worker Cuci Mobil", "Kasir", "Supervisor"])
+                role_karyawan = st.selectbox("Role Karyawan*", ["Worker Cuci Mobil", "Washer", "QC Inspector", "Kasir", "Supervisor"])
                 
                 if role_karyawan in ["Kasir", "Supervisor"]:
                     gaji_tetap = st.number_input("Gaji Tetap/Minggu (Rp)*", min_value=0, step=100000, value=500000)
@@ -5939,8 +6394,8 @@ def payroll_page(role):
                     shift = st.selectbox("Shift*", ["Pagi", "Malam"])
                     st.info(f"💡 Gaji worker mengikuti persentase dari pendapatan cuci mobil")
                 
-                jam_masuk = st.time_input("Jam Masuk Default", value=time(8, 0))
-                jam_pulang = st.time_input("Jam Pulang Default", value=time(17, 0))
+                jam_masuk = st.time_input("Jam Masuk Default", value=dt_time(8, 0))
+                jam_pulang = st.time_input("Jam Pulang Default", value=dt_time(17, 0))
                 no_telp = st.text_input("No Telepon")
                 
                 submit = st.form_submit_button("Simpan Karyawan", use_container_width=True)
@@ -5976,15 +6431,24 @@ def payroll_page(role):
                         st.markdown(f"**Edit Data: {emp['nama']}**")
                         
                         edit_nama = st.text_input("Nama", value=emp['nama'])
-                        edit_role = st.selectbox("Role", ["Worker Cuci Mobil", "Kasir", "Supervisor"], 
-                                                index=["Worker Cuci Mobil", "Kasir", "Supervisor"].index(emp['role_karyawan']))
+                        
+                        # List semua role yang mungkin
+                        all_roles = ["Worker Cuci Mobil", "Washer", "QC Inspector", "Kasir", "Supervisor"]
+                        # Cari index dari role saat ini, default 0 jika tidak ditemukan
+                        try:
+                            role_index = all_roles.index(emp['role_karyawan'])
+                        except ValueError:
+                            role_index = 0
+                        
+                        edit_role = st.selectbox("Role", all_roles, index=role_index)
                         
                         if edit_role in ["Kasir", "Supervisor"]:
                             edit_gaji = st.number_input("Gaji Tetap/Minggu (Rp)", min_value=0, step=100000, value=emp['gaji_tetap'])
                         else:
                             edit_gaji = 0
+                            st.info(f"💡 Gaji worker mengikuti persentase dari pendapatan cuci mobil")
                         
-                        edit_shift = st.selectbox("Shift", ["Pagi", "Malam"], index=["Pagi", "Malam"].index(emp['shift']) if emp['shift'] else 0)
+                        edit_shift = st.selectbox("Shift", ["Pagi", "Malam"], index=["Pagi", "Malam"].index(emp['shift']) if emp['shift'] in ["Pagi", "Malam"] else 0)
                         edit_jam_masuk = st.time_input("Jam Masuk", value=datetime.strptime(emp['jam_masuk_default'], "%H:%M").time())
                         edit_jam_pulang = st.time_input("Jam Pulang", value=datetime.strptime(emp['jam_pulang_default'], "%H:%M").time())
                         edit_no_telp = st.text_input("No Telepon", value=emp['no_telp'] or "")
@@ -6414,6 +6878,16 @@ def main():
     
     # Initialize database di awal sebelum login
     init_db()
+    
+    # Auto-populate data dummy jika database kosong (untuk deployment pertama kali)
+    if check_database_empty():
+        with st.spinner("🔄 Database kosong, sedang membuat data dummy..."):
+            success, message = populate_dummy_data()
+            if success:
+                st.success(message)
+                st.info("✨ Database siap digunakan!")
+                time.sleep(2)
+                st.rerun()
     
     if "is_logged_in" not in st.session_state or not st.session_state["is_logged_in"]:
         login_page()
